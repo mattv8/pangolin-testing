@@ -9,39 +9,6 @@ This directory is designed to be committed to a standalone repo (or kept alongsi
 - **Install scripts** — `get-newt.sh` / `get-olm.sh` for installing fork binaries (same pattern as upstream)
 - **CI workflow** — GitHub Actions workflow for automated builds and releases
 
-## Repository Layout
-
-```
-testing/
-├── scripts/
-│   ├── deploy.sh          # Main build/push/deploy orchestrator
-│   ├── get-newt.sh        # Install script for Newt (fork)
-│   ├── get-olm.sh         # Install script for OLM (fork)
-│   └── run-tests.sh       # E2E test suite (runs inside test-client container)
-├── .github/
-│   └── workflows/
-│       └── build-release.yml  # CI: cross-compile + GitHub releases
-├── config/
-│   ├── pangolin/config.yml    # Pangolin test config (PostgreSQL)
-│   └── newt/newt.yml          # Newt test config
-├── services/                  # Dockerfiles for test stack components
-├── results/                   # Test output (gitignored)
-├── bin/                       # Compiled binaries (gitignored)
-├── docker-compose.yml         # Local test stack
-├── test-stack.sh              # Test stack management (build/start/stop/test)
-└── README.md                  # This file
-```
-
-## Prerequisites
-
-| Tool | Version | Purpose |
-|------|---------|---------|
-| Docker + Buildx | 24+ | Build & run containers, multi-arch builds |
-| Go | 1.25+ | Cross-compile Newt & OLM binaries |
-| `gh` CLI | 2.0+ | Create GitHub releases |
-| `git` | 2.0+ | Push to forks & sync upstream |
-| `ssh` | — | Deploy to staging server |
-
 ## Quick Reference
 
 ```bash
@@ -100,14 +67,6 @@ cd ../olm && git push origin main
 ```
 
 If there are rebase conflicts, the script aborts the rebase and tells you which repo needs manual resolution.
-
-### Working with feature branches
-
-```bash
-cd ../pangolin && git checkout -b feat/dns-authority
-# ... make changes ...
-cd ../testing && ./scripts/deploy.sh push-git
-```
 
 ---
 
@@ -186,7 +145,7 @@ After compiling, create GitHub pre-releases with the binaries attached:
 ./scripts/deploy.sh release
 ```
 
-This creates releases on `mattv8/newt` and `mattv8/olm` with all platform binaries attached.
+This creates a consolidated release on **`mattv8/pangolin-testing`** with both Newt and OLM binaries attached. This allows the install scripts to pull from a single reliable source during development.
 
 ### Install from GitHub (like upstream)
 
@@ -202,9 +161,9 @@ curl -fsSL https://raw.githubusercontent.com/mattv8/pangolin-testing/main/script
 
 The scripts auto-detect OS/arch and download the correct binary from the latest GitHub release.
 
-**To use these install scripts**, the testing repo must be pushed to GitHub as `mattv8/pangolin-testing` (public). The scripts pull binary releases from `mattv8/newt` and `mattv8/olm` respectively.
+**To use these install scripts**, the testing repo must be pushed to GitHub as `mattv8/pangolin-testing` (public). The scripts pull binary releases from this same repo by default.
 
-> **Note:** The Pangolin UI is intentionally not modified — the install scripts are designed to be contributed back upstream. When contributing, replace `mattv8` with `fosrl` in the `REPO` variable.
+> **Note:** The Pangolin UI is intentionally not modified — the install scripts are designed to be contributed back upstream. When contributing, the default `REPO` in the scripts should be updated back to `fosrl/newt` or `fosrl/olm`.
 
 The install scripts support overriding the repo via environment variable:
 
@@ -216,9 +175,11 @@ OLM_REPO=fosrl/olm  curl -fsSL .../get-olm.sh | bash
 
 ### Run command (after install)
 
+Since Newt now acts as an Edge Ingress (binding to ports 53/80/443), it requires root privileges:
+
 ```bash
-# Same as what the Pangolin UI shows:
-newt --id <NEWT_ID> --secret <SECRET> --endpoint https://proxy.visnovsky.us
+# Same as what the Pangolin UI shows (added sudo):
+sudo newt --id <NEWT_ID> --secret <SECRET> --endpoint https://proxy.visnovsky.us
 
 # OLM (typically installed via the Pangolin UI dialog)
 olm --id <OLM_ID> --secret <SECRET> --endpoint https://proxy.visnovsky.us
@@ -249,16 +210,43 @@ git push origin dns-authority-v0.1.0
 
 ### Required GitHub secrets
 
-Set these in each fork repo's Settings → Secrets:
+Set these in the **`mattv8/pangolin-testing`** repository's Settings → Secrets → Actions:
 
 | Secret | Description |
 |--------|-------------|
-| `HARBOR_USERNAME` | Harbor registry username (e.g. `admin`) |
+| `HARBOR_USERNAME` | Harbor registry username (e.g. `harbor`) |
 | `HARBOR_PASSWORD` | Harbor registry password |
+| `COSIGN_PRIVATE_KEY` | PEM-encoded private key for image signing |
+| `COSIGN_PASSWORD` | Password for the cosign private key |
 
 ---
 
-## 6. Deploy to Staging
+## 6. Security & Cryptography
+
+This feature implements a robust **Hybrid Authentication** model to balance security and performance at the edge.
+
+### RSA Identity Keypair
+
+Pangolin now automatically generates an **RSA 2048-bit Identity Keypair** on first boot.
+- **Private Key**: Stored in `config/auth/jwt_private.pem` (protected with `0o600` permissions). Used to sign JWTs for user sessions.
+- **Public Key**: Stored in `config/auth/jwt_public.pem`. This PEM-encoded key is sent to Newt instances via the Auth Proxy configuration message over WebSocket.
+
+### Hybrid Validation Flow
+
+When a user accesses a protected resource through Newt:
+1. **Local JWT Check**: Newt attempts to verify the user's `p_session` cookie locally using the RSA Public Key. If valid, the request is proxied immediately (sub-millisecond latency).
+2. **Session API Fallback**: If local verification fails (e.g., the token is an older opaque session string or the JWT is malformed), Newt falls back to calling Pangolin's `/api/v1/auth/session/validate` endpoint.
+3. **Strict Enforcement**: If both checks fail, the user is redirected to the Pangolin login page. This ensures backward compatibility with existing sessions while enabling zero-callback validation for newer JWT-based sessions.
+
+### Container Signing (Sigstore/Cosign)
+
+All Docker images pushed via `deploy.sh` or CI are signed using **Cosign**.
+- Annotations include the build date, commit SHA, and repository URL.
+- Verification: `cosign verify --key cosign.pub hub.docker.visnovsky.us/library/pangolin:dns-authority-dev`
+
+---
+
+## 8. Deploy to Staging
 
 The staging environment is on `proxy.visnovsky.us` (Proxy DCA) running the production-like stack (Pangolin + Traefik + CrowdSec + Gerbil).
 
@@ -294,7 +282,7 @@ newt --id <ID> --secret <SECRET> --endpoint https://proxy.visnovsky.us
 
 ---
 
-## 7. Local Test Stack
+## 9. Local Test Stack
 
 ### Architecture
 
@@ -303,9 +291,9 @@ newt --id <ID> --secret <SECRET> --endpoint https://proxy.visnovsky.us
 │                              Docker Network (172.28.0.0/16)                     │
 │                                                                                 │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐   │
-│  │  PostgreSQL   │    │   Pangolin   │    │     Newt     │    │   Backend    │   │
-│  │  172.28.0.2   │◄──►│  172.28.0.3  │◄──►│  172.28.0.10 │◄──►│  172.28.0.20 │   │
-│  │    :5432      │    │ :3000-3002   │    │ :53 :8080    │    │    :80       │   │
+│  │  PostgreSQL  │    │   Pangolin   │    │     Newt     │    │   Backend    │   │
+│  │  172.28.0.2  │◄──►│  172.28.0.3  │◄──►│  172.28.0.10 │◄──►│  172.28.0.20 │   │
+│  │    :5432     │    │ :3000-3002   │    │ :53 :8080    │    │    :80       │   │
 │  └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘   │
 │                             │ WS              │ DNS Auth             ▲          │
 │                             │                 │                      │          │
@@ -383,7 +371,7 @@ docker compose start backend
 
 ---
 
-## 8. Environment Variables
+## 10. Environment Variables
 
 All configurable via env vars when calling `deploy.sh`:
 
@@ -397,7 +385,7 @@ All configurable via env vars when calling `deploy.sh`:
 
 ---
 
-## 9. Key Implementation Files
+## 11. Key Implementation Files
 
 ### Pangolin (TypeScript/Next.js)
 
