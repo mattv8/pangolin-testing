@@ -172,6 +172,26 @@ cmd_build_multiarch() {
     success "OLM multi-arch built and pushed"
 
     success "All multi-arch images built and pushed"
+
+    # Sign with cosign if available
+    if command -v cosign >/dev/null 2>&1; then
+        header "Signing Images with Cosign"
+        local cosign_key="${COSIGN_KEY:-}"
+        if [ -z "$cosign_key" ]; then
+            warn "Set COSIGN_KEY to your private key path to sign images."
+            warn "  COSIGN_KEY=~/cosign.key ./scripts/deploy.sh build-multiarch"
+        else
+            for component in pangolin newt olm; do
+                local image="${HARBOR_URL}/${HARBOR_PROJECT}/${component}:${TAG}"
+                log "Signing ${image}..."
+                cosign sign --key "${cosign_key}" --yes "${image}" || \
+                    warn "Failed to sign ${image}"
+            done
+            success "All images signed"
+        fi
+    else
+        warn "cosign not installed — skipping image signing"
+    fi
 }
 
 # ==== Push to Harbor ==========================================================
