@@ -1,0 +1,164 @@
+# DNS Authority & Auth Proxy End-to-End Test Stack
+# This simulates the full Pangolin architecture for local testing
+
+networks:
+  pangolin-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+services:
+  # ===========================================
+  # PostgreSQL Database
+  # ===========================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: test-postgres
+    networks:
+      pangolin-net:
+        ipv4_address: 172.28.0.2
+    environment:
+      POSTGRES_USER: pangolin
+      POSTGRES_PASSWORD: pangolin_test_password
+      POSTGRES_DB: pangolin
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pangolin"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================
+  # Pangolin Control Plane
+  # ===========================================
+  pangolin:
+    build:
+      context: ../pangolin
+      dockerfile: ../testing/services/pangolin/Dockerfile
+    container_name: test-pangolin
+    networks:
+      pangolin-net:
+        ipv4_address: 172.28.0.3
+    ports:
+      - "3000:3000"   # Next.js frontend
+      - "3001:3001"   # API server
+      - "3002:3002"   # WebSocket server
+    environment:
+      - NODE_ENV=development
+      - POSTGRES_CONNECTION_STRING=postgres://pangolin:pangolin_test_password@postgres:5432/pangolin
+    volumes:
+      - ./config/pangolin/config.yml:/app/config/config.yml:ro
+      # Mount specific source directories for hot-reload (exclude migrations/db)
+      - ../pangolin/server/routers:/app/server/routers:ro
+      - ../pangolin/server/lib:/app/server/lib:ro
+      - ../pangolin/server/private:/app/server/private:ro
+      - ../pangolin/src:/app/src:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ===========================================
+  # Newt Site Agent (with DNS Authority)
+  # ===========================================
+  newt:
+    build:
+      context: ../newt
+      dockerfile: ../testing/services/newt/Dockerfile
+    container_name: test-newt
+    networks:
+      pangolin-net:
+        ipv4_address: 172.28.0.10
+    ports:
+      - "5353:53/udp"     # DNS Authority (use 5353 to avoid conflict with local resolver)
+      - "5353:53/tcp"     # DNS Authority (TCP)
+      - "8080:8080"     # Auth Proxy HTTP
+      - "8443:8443"     # Auth Proxy HTTPS
+    environment:
+      - PANGOLIN_ENDPOINT=http://pangolin:3002
+      - NEWT_ID=test-newt-001
+      - NEWT_SECRET=test-secret-for-local-development-only
+      - LOG_LEVEL=DEBUG
+      - DNS_AUTHORITY_ENABLED=true
+      - AUTH_PROXY_ENABLED=true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ./config/newt:/etc/newt
+    depends_on:
+      - pangolin
+
+  # ===========================================
+  # Mock Backend Application (simulates real app)
+  # ===========================================
+  backend:
+    image: nginx:alpine
+    container_name: test-backend
+    networks:
+      pangolin-net:
+        ipv4_address: 172.28.0.20
+    volumes:
+      - ./services/backend/html:/usr/share/nginx/html:ro
+      - ./services/backend/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+
+  # ===========================================
+  # Secondary Backend (for failover testing)
+  # ===========================================
+  backend-secondary:
+    image: nginx:alpine
+    container_name: test-backend-secondary
+    networks:
+      pangolin-net:
+        ipv4_address: 172.28.0.21
+    volumes:
+      - ./services/backend-secondary/html:/usr/share/nginx/html:ro
+      - ./services/backend/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+
+  # ===========================================
+  # Test Client (with custom DNS resolver)
+  # ===========================================
+  test-client:
+    build:
+      context: ./services/test-client
+      dockerfile: Dockerfile
+    container_name: test-client
+    networks:
+      pangolin-net:
+        ipv4_address: 172.28.0.100
+    dns:
+      - 172.28.0.10  # Point to Newt's DNS Authority
+    environment:
+      - PANGOLIN_URL=http://pangolin:3001
+      - NEWT_DNS=172.28.0.10
+      - BACKEND_IP=172.28.0.20
+      - TEST_DOMAIN=app.test.local
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./results:/results
+    depends_on:
+      - newt
+      - backend
+      - backend-secondary
+    stdin_open: true
+    tty: true
+
+volumes:
+  postgres-data:

@@ -1,0 +1,14 @@
+# Test artifacts
+cookies.txt
+results/*.json
+results/*.log
+
+# Compiled binaries
+bin/
+
+# Backups
+*.bak
+
+# Secrets / credentials (never commit)
+*.env.local
+harbor-creds.txt

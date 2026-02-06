@@ -1,0 +1,110 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Test Stack: Build",
+      "type": "shell",
+      "command": "docker compose build --parallel",
+      "options": { "cwd": "${workspaceFolder}/testing" },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Stack: Start",
+      "type": "shell",
+      "command": "docker compose up -d && echo '\\n⏳ Waiting for services...' && sleep 5 && docker compose ps",
+      "options": { "cwd": "${workspaceFolder}/testing" },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Stack: Stop",
+      "type": "shell",
+      "command": "docker compose down",
+      "options": { "cwd": "${workspaceFolder}/testing" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Stack: Clean (destroy volumes)",
+      "type": "shell",
+      "command": "docker compose down -v --remove-orphans",
+      "options": { "cwd": "${workspaceFolder}/testing" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Stack: Rebuild Pangolin (no-cache)",
+      "type": "shell",
+      "command": "docker compose build pangolin --no-cache && docker compose up -d pangolin",
+      "options": { "cwd": "${workspaceFolder}/testing" },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Stack: Rebuild Newt (no-cache)",
+      "type": "shell",
+      "command": "docker compose build newt --no-cache && docker compose up -d newt",
+      "options": { "cwd": "${workspaceFolder}/testing" },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Stack: Logs (all)",
+      "type": "shell",
+      "command": "docker compose logs -f --tail=100",
+      "options": { "cwd": "${workspaceFolder}/testing" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Stack: Logs (Pangolin)",
+      "type": "shell",
+      "command": "docker compose logs -f --tail=100 pangolin",
+      "options": { "cwd": "${workspaceFolder}/testing" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Stack: Logs (Newt)",
+      "type": "shell",
+      "command": "docker compose logs -f --tail=100 newt",
+      "options": { "cwd": "${workspaceFolder}/testing" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Stack: Status",
+      "type": "shell",
+      "command": "./test-stack.sh status",
+      "options": { "cwd": "${workspaceFolder}/testing" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Stack: Run Tests",
+      "type": "shell",
+      "command": "docker compose exec test-client bash /scripts/run-tests.sh",
+      "options": { "cwd": "${workspaceFolder}/testing" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Stack: DNS Query",
+      "type": "shell",
+      "command": "dig @localhost -p 5353 dnstest.test.local A",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Stack: Shell (test-client)",
+      "type": "shell",
+      "command": "docker compose exec test-client bash",
+      "options": { "cwd": "${workspaceFolder}/testing" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Stack: Fresh Start (clean + build + start)",
+      "type": "shell",
+      "command": "docker compose down -v --remove-orphans && docker compose build --parallel && docker compose up -d && echo '\\n⏳ Waiting for services...' && sleep 8 && docker compose ps",
+      "options": { "cwd": "${workspaceFolder}/testing" },
+      "group": "build",
+      "problemMatcher": []
+    }
+  ]
+}

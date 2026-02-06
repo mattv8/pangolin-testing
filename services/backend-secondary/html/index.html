@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Application - Secondary Server (Failover)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .server-badge {
+            display: inline-block;
+            background: #f59e0b;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+            margin-bottom: 20px;
+        }
+        .info-box {
+            background: #f3f4f6;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .info-box h3 {
+            margin-top: 0;
+            color: #4b5563;
+        }
+        .warning {
+            color: #f59e0b;
+            font-weight: bold;
+        }
+        #user-info {
+            font-family: monospace;
+            background: #1f2937;
+            color: #f59e0b;
+            padding: 15px;
+            border-radius: 6px;
+            white-space: pre-wrap;
+        }
+        button {
+            background: #f59e0b;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+        }
+        button:hover {
+            background: #d97706;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <span class="server-badge">🟠 SECONDARY SERVER (FAILOVER)</span>
+        <h1>DNS Authority Test Application</h1>
+        <p>This page is served by the <strong>secondary/failover backend server</strong>.</p>
+
+        <div class="info-box">
+            <h3>⚠️ Failover Active</h3>
+            <p>You are seeing this page because:</p>
+            <ul>
+                <li>The primary server is unhealthy or unreachable</li>
+                <li>DNS Authority failover routing is working correctly</li>
+                <li>Traffic has been automatically redirected to this secondary server</li>
+            </ul>
+        </div>
+
+        <div class="info-box">
+            <h3>🔐 Authenticated User Info</h3>
+            <div id="user-info">Loading...</div>
+        </div>
+
+        <div class="info-box">
+            <h3>🧪 Test Actions</h3>
+            <button onclick="fetchWhoami()">Check Auth Headers</button>
+            <button onclick="location.reload()">Refresh Page</button>
+        </div>
+    </div>
+
+    <script>
+        async function fetchWhoami() {
+            try {
+                const response = await fetch('/api/whoami');
+                const data = await response.json();
+                document.getElementById('user-info').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('user-info').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        // Auto-fetch on load
+        fetchWhoami();
+    </script>
+</body>
+</html>

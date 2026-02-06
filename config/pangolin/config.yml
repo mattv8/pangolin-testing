@@ -1,0 +1,45 @@
+# Pangolin Test Configuration
+# For local Docker-based testing of DNS Authority and Auth Proxy
+
+gerbil:
+    start_port: 51820
+    base_endpoint: "pangolin"
+
+app:
+    dashboard_url: "http://localhost:3001"
+    log_level: "debug"
+    telemetry:
+        anonymous_usage: false
+
+domains:
+    test-domain:
+        base_domain: "test.local"
+
+server:
+    secret: "test-secret-for-local-development-do-not-use-in-production-32chars!"
+    external_port: 3001
+    internal_port: 3002
+    next_port: 3000
+    cors:
+        origins: ["http://localhost:3000", "http://pangolin:3000", "http://pangolin:3001"]
+        methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
+        allowed_headers: ["X-CSRF-Token", "Content-Type", "Authorization"]
+        credentials: true
+
+postgres:
+    connection_string: "postgres://pangolin:pangolin_test_password@postgres:5432/pangolin"
+
+flags:
+    require_email_verification: false
+    disable_signup_without_invite: false
+    disable_user_create_org: false
+    allow_raw_resources: true
+
+users:
+    server_admin:
+        email: "admin@test.local"
+        password: "TestAdmin123!"
+
+settings:
+    allow_registration: true
+    org_require_approval: false
