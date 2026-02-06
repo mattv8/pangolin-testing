@@ -305,37 +305,21 @@ curl -fsSL https://raw.githubusercontent.com/${GITHUB_USER}/pangolin-testing/mai
 curl -fsSL https://raw.githubusercontent.com/${GITHUB_USER}/pangolin-testing/main/scripts/get-olm.sh | bash
 \`\`\`"
 
-    # Release Newt binaries
-    log "Creating Newt release..."
-    local newt_bins=("${BIN_DIR}"/newt_*)
-    if [ ${#newt_bins[@]} -gt 0 ]; then
-        pushd "${NEWT_DIR}" > /dev/null
-        gh release delete "${TAG}" --yes 2>/dev/null || true
-        gh release create "${TAG}" \
-            --title "Newt ${TAG}" \
-            --notes "${release_notes}" \
-            --prerelease \
-            "${newt_bins[@]}"
-        popd > /dev/null
-        success "Newt release created: https://github.com/${GITHUB_USER}/newt/releases/tag/${TAG}"
-    fi
+    # Release all binaries on pangolin-testing
+    log "Creating release on pangolin-testing..."
+    local all_bins=("${BIN_DIR}"/newt_* "${BIN_DIR}"/olm_*)
 
-    # Release OLM binaries
-    log "Creating OLM release..."
-    local olm_bins=("${BIN_DIR}"/olm_*)
-    if [ ${#olm_bins[@]} -gt 0 ]; then
-        pushd "${OLM_DIR}" > /dev/null
-        gh release delete "${TAG}" --yes 2>/dev/null || true
-        gh release create "${TAG}" \
-            --title "OLM ${TAG}" \
-            --notes "${release_notes}" \
-            --prerelease \
-            "${olm_bins[@]}"
-        popd > /dev/null
-        success "OLM release created: https://github.com/${GITHUB_USER}/olm/releases/tag/${TAG}"
-    fi
+    pushd "${TESTING_DIR}" > /dev/null
+    gh release delete "${TAG}" --yes 2>/dev/null || true
+    gh release create "${TAG}" \
+        --title "DNS Authority ${TAG}" \
+        --notes "${release_notes}" \
+        --prerelease \
+        "${all_bins[@]}"
+    popd > /dev/null
+    success "Release created: https://github.com/${GITHUB_USER}/pangolin-testing/releases/tag/${TAG}"
 
-    success "GitHub releases created"
+    success "GitHub release created"
 }
 
 # ==== Push to GitHub ==========================================================

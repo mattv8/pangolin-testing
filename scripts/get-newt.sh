@@ -16,8 +16,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# GitHub repository info - override with NEWT_REPO env var
-REPO="${NEWT_REPO:-mattv8/newt}"
+# GitHub repository info - binaries are released on the testing repo
+REPO="${NEWT_REPO:-mattv8/pangolin-testing}"
 GITHUB_API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 
 print_status()  { echo -e "${GREEN}[INFO]${NC} $1"; }
