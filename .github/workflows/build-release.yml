@@ -50,28 +50,24 @@ jobs:
         run: |
           mkdir -p bin
 
-          targets=(
-            "linux:amd64::"
-            "linux:arm64::"
-            "linux:arm:7:arm32"
-            "linux:arm:6:arm32v6"
-            "linux:riscv64::"
-            "darwin:amd64::"
-            "darwin:arm64::"
-            "windows:amd64::_windows_amd64.exe"
-          )
-
-          for target in "${targets[@]}"; do
-            IFS=':' read -r goos goarch goarm suffix <<< "$target"
-            if [ -z "$suffix" ]; then
-              suffix="${goos}_${goarch}"
-            fi
-            output="bin/${{ matrix.component }}_${suffix}"
+          build_bin() {
+            local goos=$1 goarch=$2 goarm=$3 suffix=$4
+            local output="bin/${{ matrix.component }}_${suffix}"
             echo "Building ${output}..."
-            env="CGO_ENABLED=0 GOOS=${goos} GOARCH=${goarch}"
-            [ -n "$goarm" ] && env="${env} GOARM=${goarm}"
-            eval "${env}" go build -ldflags="-s -w" -o "${output}" .
-          done
+            export CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}"
+            [ -n "$goarm" ] && export GOARM="${goarm}"
+            go build -ldflags="-s -w" -o "${output}" .
+            unset GOARM
+          }
+
+          build_bin linux   amd64  ""  linux_amd64
+          build_bin linux   arm64  ""  linux_arm64
+          build_bin linux   arm    7   linux_arm32
+          build_bin linux   arm    6   linux_arm32v6
+          build_bin linux   riscv64 "" linux_riscv64
+          build_bin darwin  amd64  ""  darwin_amd64
+          build_bin darwin  arm64  ""  darwin_arm64
+          build_bin windows amd64  ""  windows_amd64.exe
 
           ls -lh bin/
 
