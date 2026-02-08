@@ -9,29 +9,6 @@ This directory is designed to be committed to a standalone repo (or kept alongsi
 - **Install scripts** — `get-newt.sh` / `get-olm.sh` for installing fork binaries (same pattern as upstream)
 - **CI workflow** — GitHub Actions workflow for automated builds and releases
 
-## Quick Reference
-
-```bash
-# ── Local test stack ──
-./test-stack.sh build && ./test-stack.sh start    # Build & start
-./test-stack.sh test                               # Run E2E tests
-./test-stack.sh status                             # Health check
-./test-stack.sh logs newt                          # Tail logs
-
-# ── Build & deploy ──
-./scripts/deploy.sh status                         # Show repo/image state
-./scripts/deploy.sh compile                        # Cross-compile Go binaries
-./scripts/deploy.sh build                          # Build Docker images
-./scripts/deploy.sh push                           # Push images to Harbor
-./scripts/deploy.sh release                        # Create GitHub releases
-./scripts/deploy.sh deploy-staging                 # Deploy to proxy.visnovsky.us
-./scripts/deploy.sh all                            # Full pipeline
-
-# ── Git workflow ──
-./scripts/deploy.sh push-git                       # Push all repos to origin
-./scripts/deploy.sh sync-upstream                  # Rebase all repos on upstream
-```
-
 ---
 
 ## 1. Forked Repos & Git Workflow
@@ -44,108 +21,10 @@ All three components are forked from `fosrl/*` to `mattv8/*`:
 | Newt | `mattv8/newt` | `fosrl/newt` |
 | OLM | `mattv8/olm` | `fosrl/olm` |
 
-### Push changes to your fork
-
-```bash
-# Push all three repos at once
-./scripts/deploy.sh push-git
-
-# Or push individually
-cd ../pangolin && git push origin main
-cd ../newt && git push origin main
-cd ../olm && git push origin main
-```
-
-### Sync with upstream
-
-```bash
-# Fetch upstream and rebase all repos
-./scripts/deploy.sh sync-upstream
-
-# Then push the rebased branches
-./scripts/deploy.sh push-git
-```
-
 If there are rebase conflicts, the script aborts the rebase and tells you which repo needs manual resolution.
 
 ---
 
-## 2. Building & Compiling
-
-### Cross-compile Go binaries (Newt & OLM)
-
-```bash
-./scripts/deploy.sh compile
-```
-
-This builds binaries for linux/amd64, linux/arm64, linux/arm32, linux/arm32v6, darwin/amd64, and darwin/arm64 into `testing/bin/`. Output:
-
-```
-bin/
-├── newt_linux_amd64
-├── newt_linux_arm64
-├── newt_linux_arm32
-├── newt_linux_arm32v6
-├── newt_darwin_amd64
-├── newt_darwin_arm64
-├── olm_linux_amd64
-├── olm_linux_arm64
-├── olm_linux_arm32
-├── olm_linux_arm32v6
-├── olm_darwin_amd64
-└── olm_darwin_arm64
-```
-
-### Build Docker images
-
-```bash
-# Single-arch (local, fast)
-./scripts/deploy.sh build
-
-# Multi-arch (buildx, pushes directly to Harbor)
-./scripts/deploy.sh build-multiarch
-```
-
-Images are tagged as:
-- `hub.docker.visnovsky.us/library/pangolin:dns-authority-dev`
-- `hub.docker.visnovsky.us/library/newt:dns-authority-dev`
-- `hub.docker.visnovsky.us/library/olm:dns-authority-dev`
-
-Override the tag: `TAG=v0.2.0 ./scripts/deploy.sh build`
-
----
-
-## 3. Pushing to Harbor
-
-Harbor is at `hub.docker.visnovsky.us` (project: `library`).
-
-```bash
-# Login first (one-time)
-docker login hub.docker.visnovsky.us
-
-# Push all images
-./scripts/deploy.sh push
-
-# Or push individually
-docker push hub.docker.visnovsky.us/library/pangolin:dns-authority-dev
-```
-
-For multi-arch builds, use `build-multiarch` which pushes automatically via `--push`.
-
----
-
-## 4. GitHub Releases & Install Scripts
-
-### Create releases
-
-After compiling, create GitHub pre-releases with the binaries attached:
-
-```bash
-./scripts/deploy.sh compile
-./scripts/deploy.sh release
-```
-
-This creates a consolidated release on **`mattv8/pangolin-testing`** with both Newt and OLM binaries attached. This allows the install scripts to pull from a single reliable source during development.
 
 ### Install from GitHub (like upstream)
 
@@ -187,40 +66,6 @@ olm --id <OLM_ID> --secret <SECRET> --endpoint https://proxy.visnovsky.us
 
 ---
 
-## 5. CI / GitHub Actions
-
-The workflow at `.github/workflows/build-release.yml` automates:
-
-1. **Cross-compile** Newt & OLM for all platforms
-2. **Create GitHub releases** with binaries attached
-3. **Optionally build & push Docker images** to Harbor
-
-### Trigger manually
-
-Go to Actions → "Build & Release Newt + OLM" → Run workflow:
-- `tag`: Release tag (e.g. `dns-authority-v0.1.0`)
-- `push_docker`: Check to also push Docker images to Harbor
-
-### Trigger via tag push
-
-```bash
-git tag dns-authority-v0.1.0
-git push origin dns-authority-v0.1.0
-```
-
-### Required GitHub secrets
-
-Set these in the **`mattv8/pangolin-testing`** repository's Settings → Secrets → Actions:
-
-| Secret | Description |
-|--------|-------------|
-| `HARBOR_USERNAME` | Harbor registry username (e.g. `harbor`) |
-| `HARBOR_PASSWORD` | Harbor registry password |
-| `COSIGN_PRIVATE_KEY` | PEM-encoded private key for image signing |
-| `COSIGN_PASSWORD` | Password for the cosign private key |
-
----
-
 ## 6. Security & Cryptography
 
 This feature implements a robust **Hybrid Authentication** model to balance security and performance at the edge.
@@ -238,37 +83,6 @@ When a user accesses a protected resource through Newt:
 2. **Session API Fallback**: If local verification fails (e.g., the token is an older opaque session string or the JWT is malformed), Newt falls back to calling Pangolin's `/api/v1/auth/session/validate` endpoint.
 3. **Strict Enforcement**: If both checks fail, the user is redirected to the Pangolin login page. This ensures backward compatibility with existing sessions while enabling zero-callback validation for newer JWT-based sessions.
 
-### Container Signing (Sigstore/Cosign)
-
-All Docker images pushed via `deploy.sh` or CI are signed using **Cosign**.
-- Annotations include the build date, commit SHA, and repository URL.
-- Verification: `cosign verify --key cosign.pub hub.docker.visnovsky.us/library/pangolin:dns-authority-dev`
-
----
-
-## 8. Deploy to Staging
-
-The staging environment is on `proxy.visnovsky.us` (Proxy DCA) running the production-like stack (Pangolin + Traefik + CrowdSec + Gerbil).
-
-```bash
-./scripts/deploy.sh deploy-staging
-```
-
-This SSHs into the staging server and:
-1. Pulls the new Pangolin image from Harbor
-2. Updates `docker-compose.yml` with the new image reference
-3. Restarts the Pangolin container
-4. Waits for the health check to pass
-
-### Manual staging deploy
-
-```bash
-ssh root@proxy.visnovsky.us
-cd /root
-docker pull hub.docker.visnovsky.us/library/pangolin:dns-authority-dev
-# Edit docker-compose.yml to update the pangolin image
-docker compose up -d pangolin
-```
 
 ### Deploying Newt/OLM to remote sites
 
@@ -371,20 +185,6 @@ docker compose start backend
 
 ---
 
-## 10. Environment Variables
-
-All configurable via env vars when calling `deploy.sh`:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HARBOR_URL` | `hub.docker.visnovsky.us` | Harbor registry URL |
-| `HARBOR_PROJECT` | `library` | Harbor project name |
-| `GITHUB_USER` | `mattv8` | GitHub username (for releases) |
-| `TAG` | `dns-authority-dev` | Docker image / release tag |
-| `PLATFORMS` | `linux/amd64,linux/arm64` | Buildx target platforms |
-
----
-
 ## 11. Key Implementation Files
 
 ### Pangolin (TypeScript/Next.js)
@@ -417,42 +217,9 @@ All configurable via env vars when calling `deploy.sh`:
 ## 10. Troubleshooting
 
 ### Pangolin won't start — migration error
-```bash
-docker compose down -v    # Clear volumes (destroys DB)
-docker compose up -d
-```
-
-### Pangolin won't start after schema changes
-```bash
-docker compose build pangolin --no-cache
-docker compose down -v && docker compose up -d
-```
 
 ### Port 53 conflict on host
 DNS is mapped to host port 5353. Use `dig @localhost -p 5353`.
-
-### Harbor push fails — unauthorized
-```bash
-docker login hub.docker.visnovsky.us
-# Username: admin
-```
-
-### `gh` CLI not authenticated
-```bash
-gh auth login
-```
-
-### Buildx builder not available
-```bash
-docker buildx create --name pangolin-builder --use
-docker buildx inspect --bootstrap
-```
-
-### Deploy script can't SSH to staging
-Ensure your SSH key is added to `root@proxy.visnovsky.us`:
-```bash
-ssh-copy-id root@proxy.visnovsky.us
-```
 
 ### Checking container health
 ```bash
