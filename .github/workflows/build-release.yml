@@ -198,6 +198,7 @@ jobs:
 
           echo "Signing ${IMAGE_BASE}@${DIGEST}..."
           cosign sign --key env://COSIGN_PRIVATE_KEY \
+            --registry-referrers-mode=oci-1-1 \
             -a "repo=${{ matrix.component }}" \
             -a "tag=${{ steps.tag.outputs.tag }}" \
             -a "workflow=${{ github.workflow }}" \
