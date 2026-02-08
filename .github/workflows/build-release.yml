@@ -192,6 +192,7 @@ jobs:
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_EXPERIMENTAL: '1'
         run: |
           IMAGE_BASE="${{ env.HARBOR_URL }}/${{ env.HARBOR_PROJECT }}/${{ matrix.component }}"
           DIGEST="${{ steps.build-push.outputs.digest }}"
