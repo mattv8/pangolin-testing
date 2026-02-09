@@ -136,9 +136,10 @@ jobs:
             binaries/*
 
   # ──────────────────────────────────────────────────────────────────
-  # (Optional) Build, push, and sign Docker images to Harbor
+  # (Optional) Build and push Docker images to Harbor
+  # Structured like fosrl/pangolin cicd.yml: separate arch builds + manifest
   # ──────────────────────────────────────────────────────────────────
-  docker:
+  docker-amd64:
     if: github.event.inputs.push_docker == 'true'
     needs: compile
     runs-on: ubuntu-latest
@@ -154,6 +155,134 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Login to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.HARBOR_URL }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push (AMD64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.HARBOR_URL }}/${{ env.HARBOR_PROJECT }}/${{ matrix.component }}:${{ steps.tag.outputs.tag }}-amd64
+          build-args: |
+            BUILD=oss
+            DATABASE=sqlite
+            VERSION=${{ steps.tag.outputs.tag }}
+
+  docker-arm64:
+    if: github.event.inputs.push_docker == 'true'
+    needs: compile
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [pangolin, newt, olm]
+    steps:
+      - name: Checkout ${{ matrix.component }}
+        uses: actions/checkout@v4
+        with:
+          repository: mattv8/${{ matrix.component }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.HARBOR_URL }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push (ARM64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.HARBOR_URL }}/${{ env.HARBOR_PROJECT }}/${{ matrix.component }}:${{ steps.tag.outputs.tag }}-arm64
+          build-args: |
+            BUILD=oss
+            DATABASE=sqlite
+            VERSION=${{ steps.tag.outputs.tag }}
+
+  docker-manifest:
+    if: github.event.inputs.push_docker == 'true'
+    needs: [docker-amd64, docker-arm64]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [pangolin, newt, olm]
+    steps:
+      - name: Login to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.HARBOR_URL }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create and push multi-arch manifest
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          IMAGE="${{ env.HARBOR_URL }}/${{ env.HARBOR_PROJECT }}/${{ matrix.component }}"
+
+          echo "Creating multi-arch manifest for ${IMAGE}:${TAG}..."
+          docker manifest create --amend "${IMAGE}:${TAG}" \
+            "${IMAGE}:${TAG}-amd64" \
+            "${IMAGE}:${TAG}-arm64"
+
+          docker manifest create --amend "${IMAGE}:latest" \
+            "${IMAGE}:${TAG}-amd64" \
+            "${IMAGE}:${TAG}-arm64"
+
+          docker manifest push "${IMAGE}:${TAG}"
+          docker manifest push "${IMAGE}:latest"
+
+          echo "Multi-arch manifest pushed for ${{ matrix.component }}"
+
+  docker-sign:
+    if: github.event.inputs.push_docker == 'true'
+    needs: [docker-manifest]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [pangolin, newt, olm]
+    steps:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
@@ -173,40 +302,32 @@ jobs:
             echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build and push
-        id: build-push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.HARBOR_URL }}/${{ env.HARBOR_PROJECT }}/${{ matrix.component }}:${{ steps.tag.outputs.tag }}
-            ${{ env.HARBOR_URL }}/${{ env.HARBOR_PROJECT }}/${{ matrix.component }}:latest
-          build-args: |
-            BUILD=oss
-            DATABASE=sqlite
-            VERSION=${{ steps.tag.outputs.tag }}
+      - name: Get manifest digest
+        id: digest
+        run: |
+          IMAGE="${{ env.HARBOR_URL }}/${{ env.HARBOR_PROJECT }}/${{ matrix.component }}"
+          TAG="${{ steps.tag.outputs.tag }}"
+          DIGEST=$(docker manifest inspect "${IMAGE}:${TAG}" -v | jq -r '.Descriptor.digest')
+          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+          echo "Manifest digest: ${DIGEST}"
 
       - name: Sign images with cosign
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          COSIGN_EXPERIMENTAL: '1'
         run: |
-          IMAGE_BASE="${{ env.HARBOR_URL }}/${{ env.HARBOR_PROJECT }}/${{ matrix.component }}"
-          DIGEST="${{ steps.build-push.outputs.digest }}"
+          IMAGE="${{ env.HARBOR_URL }}/${{ env.HARBOR_PROJECT }}/${{ matrix.component }}"
+          DIGEST="${{ steps.digest.outputs.digest }}"
 
-          echo "Signing ${IMAGE_BASE}@${DIGEST}..."
+          echo "Signing ${IMAGE}@${DIGEST}..."
           cosign sign --key env://COSIGN_PRIVATE_KEY \
-            --registry-referrers-mode=oci-1-1 \
             -a "repo=${{ matrix.component }}" \
             -a "tag=${{ steps.tag.outputs.tag }}" \
             -a "workflow=${{ github.workflow }}" \
             -a "run=${{ github.run_id }}" \
             --yes \
-            "${IMAGE_BASE}@${DIGEST}"
+            "${IMAGE}@${DIGEST}"
 
           echo "Verifying signature..."
           cosign verify --key env://COSIGN_PRIVATE_KEY \
-            "${IMAGE_BASE}@${DIGEST}" || echo "⚠️ Verification failed (cosign public key may be needed for verify)"
+            "${IMAGE}@${DIGEST}" || echo "⚠️ Verification failed (cosign public key may be needed for verify)"
