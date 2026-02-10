@@ -192,7 +192,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        component: [pangolin, newt, olm]
+        # pangolin excluded: QEMU ARM64 builds timeout fetching Google Fonts
+        component: [newt, olm]
     steps:
       - name: Checkout ${{ matrix.component }}
         uses: actions/checkout@v4
@@ -263,24 +264,32 @@ jobs:
             echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create and push multi-arch manifest
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create and push manifest
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           IMAGE="${{ env.HARBOR_URL }}/${{ env.HARBOR_PROJECT }}/${{ matrix.component }}"
 
-          echo "Creating multi-arch manifest for ${IMAGE}:${TAG}..."
-          docker manifest create --amend "${IMAGE}:${TAG}" \
-            "${IMAGE}:${TAG}-amd64" \
-            "${IMAGE}:${TAG}-arm64"
+          if [ "${{ matrix.component }}" = "pangolin" ]; then
+            # pangolin: amd64-only (ARM64 skipped due to QEMU Google Fonts timeout)
+            echo "Tagging ${IMAGE}:${TAG}-amd64 as ${IMAGE}:${TAG} and latest..."
+            docker buildx imagetools create \
+              --tag "${IMAGE}:${TAG}" \
+              --tag "${IMAGE}:latest" \
+              "${IMAGE}:${TAG}-amd64"
+          else
+            # newt/olm: multi-arch manifest from buildx OCI indexes
+            echo "Creating multi-arch manifest for ${IMAGE}:${TAG}..."
+            docker buildx imagetools create \
+              --tag "${IMAGE}:${TAG}" \
+              --tag "${IMAGE}:latest" \
+              "${IMAGE}:${TAG}-amd64" \
+              "${IMAGE}:${TAG}-arm64"
+          fi
 
-          docker manifest create --amend "${IMAGE}:latest" \
-            "${IMAGE}:${TAG}-amd64" \
-            "${IMAGE}:${TAG}-arm64"
-
-          docker manifest push "${IMAGE}:${TAG}"
-          docker manifest push "${IMAGE}:latest"
-
-          echo "Multi-arch manifest pushed for ${{ matrix.component }}"
+          echo "Manifest pushed for ${{ matrix.component }}"
 
   docker-sign:
     if: github.event.inputs.push_docker == 'true'
@@ -309,12 +318,15 @@ jobs:
             echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Get manifest digest
         id: digest
         run: |
           IMAGE="${{ env.HARBOR_URL }}/${{ env.HARBOR_PROJECT }}/${{ matrix.component }}"
           TAG="${{ steps.tag.outputs.tag }}"
-          DIGEST=$(docker manifest inspect "${IMAGE}:${TAG}" -v | jq -r '.Descriptor.digest')
+          DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --raw | sha256sum | awk '{print "sha256:"$1}')
           echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
           echo "Manifest digest: ${DIGEST}"
 
