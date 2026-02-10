@@ -177,6 +177,8 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          cache-from: type=gha,scope=${{ matrix.component }}-amd64
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}-amd64
           tags: |
             ${{ env.HARBOR_URL }}/${{ env.HARBOR_PROJECT }}/${{ matrix.component }}:${{ steps.tag.outputs.tag }}-amd64
           build-args: |
@@ -221,10 +223,15 @@ jobs:
 
       - name: Build and push (ARM64)
         uses: docker/build-push-action@v6
+        env:
+          # Prevent Next.js OOM retries under QEMU emulation
+          BUILDX_NO_DEFAULT_ATTESTATIONS: 1
         with:
           context: .
           platforms: linux/arm64
           push: true
+          cache-from: type=gha,scope=${{ matrix.component }}-arm64
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}-arm64
           tags: |
             ${{ env.HARBOR_URL }}/${{ env.HARBOR_PROJECT }}/${{ matrix.component }}:${{ steps.tag.outputs.tag }}-arm64
           build-args: |
