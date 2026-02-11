@@ -1,152 +1,107 @@
-# DNS Authority Feature — Testing & Deployment
+# DNS Authority — Testing & Deployment
 
-End-to-end testing, build tooling, and staging deployment for the Pangolin DNS Authority, Auth Proxy, and OLM Redundant NS features.
+## 1. Deploy Fork to Production
 
-This directory is designed to be committed to a standalone repo (or kept alongside the main repos). It contains:
+### Pangolin (Docker)
 
-- **Local test stack** — Docker Compose environment simulating the full Pangolin architecture
-- **Deploy script** — Build images, cross-compile binaries, push to Harbor & GitHub, deploy to staging
-- **Install scripts** — `get-newt.sh` / `get-olm.sh` for installing fork binaries (same pattern as upstream)
-- **CI workflow** — GitHub Actions workflow for automated builds and releases
-
-## 1. Quick Start: Testing Fork Binaries in Production
-
-### Testing with Docker Images
-
-```bash
-# Update docker-compose.yml image references as needed:
-# Testing: hub.docker.visnovsky.us/library/olm:dns-authority-dev
-# Official: fosrl/olm:latest
+```yaml
+# docker-compose.yml — change pangolin image:
+image: hub.docker.visnovsky.us/library/pangolin:dns-authority-dev
+# revert: image: docker.io/fosrl/pangolin:latest
 ```
 
-### Install & Test OLM (Backup & Replace Method)
-
 ```bash
-# 1. Install official Pangolin OLM (if not already installed)
-curl -fsSL https://static.pangolin.net/get-olm.sh | bash
-
-# 2. Backup the official version
-sudo cp /usr/local/bin/olm /usr/local/bin/olm.official
-
-# 3. Install testing fork (overwrites /usr/local/bin/olm)
-curl -fsSL https://raw.githubusercontent.com/mattv8/pangolin-testing/main/scripts/get-olm.sh | bash
-
-# 4. Verify version and test
-sudo olm --version
-sudo systemctl restart olm  # or however you run olm
-
-# 5. Monitor for issues
-sudo journalctl -u olm -f  # if running as systemd service
-# OR
-sudo olm --id <OLM_ID> --secret <SECRET> --endpoint <ENDPOINT>  # if running manually
+docker compose pull pangolin && docker compose up -d pangolin
 ```
 
-### Rollback to Official OLM
+### Newt (binary — runs DNS Authority)
 
 ```bash
-# Restore official version if there are any issues
-sudo cp /usr/local/bin/olm.official /usr/local/bin/olm
-sudo systemctl restart olm
-```
-
-### Install & Test Newt (Same Approach)
-
-```bash
-# Backup & install testing version
 sudo cp /usr/local/bin/newt /usr/local/bin/newt.official
 curl -fsSL https://raw.githubusercontent.com/mattv8/pangolin-testing/main/scripts/get-newt.sh | bash
+sudo newt --version && sudo systemctl restart newt
+sudo journalctl -u newt -f
 
-# Rollback if needed
-sudo cp /usr/local/bin/newt.official /usr/local/bin/newt
-sudo systemctl restart newt
+# Rollback:
+sudo cp /usr/local/bin/newt.official /usr/local/bin/newt && sudo systemctl restart newt
 ```
 
-> **Note:** Newt requires `sudo` to bind to privileged ports (53, 80, 443) for DNS Authority and Auth Proxy features.
+### OLM (binary — no DNS Authority, optional)
 
-### Install from GitHub (like upstream)
-
-The fork install scripts work exactly like Pangolin's existing pattern — `curl | bash`:
+Only if testing OLM-specific changes. DNS Authority runs on Newt, not OLM.
 
 ```bash
-# Install Newt (DNS Authority fork)
-curl -fsSL https://raw.githubusercontent.com/mattv8/pangolin-testing/main/scripts/get-newt.sh | bash
-
-# Install OLM (DNS Authority fork)
+sudo cp /usr/local/bin/olm /usr/local/bin/olm.official
 curl -fsSL https://raw.githubusercontent.com/mattv8/pangolin-testing/main/scripts/get-olm.sh | bash
+sudo olm --version && sudo systemctl restart olm
+
+# Rollback:
+sudo cp /usr/local/bin/olm.official /usr/local/bin/olm && sudo systemctl restart olm
 ```
 
-The scripts auto-detect OS/arch and download the correct binary from the latest GitHub release.
-
-**To use these install scripts**, the testing repo must be pushed to GitHub as `mattv8/pangolin-testing` (public). The scripts pull binary releases from this same repo by default.
-
-> **Note:** The Pangolin UI is intentionally not modified — the install scripts are designed to be contributed back upstream. When contributing, the default `REPO` in the scripts should be updated back to `fosrl/newt` or `fosrl/olm`.
-
-The install scripts support overriding the repo via environment variable:
+### Run commands
 
 ```bash
-# Use upstream instead of fork
+# Newt (needs sudo for ports 53/80/443)
+sudo newt --id <NEWT_ID> --secret <SECRET> --endpoint https://proxy.visnovsky.us
+
+# OLM (unprivileged)
+olm --id <OLM_ID> --secret <SECRET> --endpoint https://proxy.visnovsky.us
+```
+
+### Install script overrides
+
+Scripts auto-detect OS/arch. Repo must be public at `mattv8/pangolin-testing`.
+
+```bash
+# Override repo (e.g. use upstream):
 NEWT_REPO=fosrl/newt curl -fsSL .../get-newt.sh | bash
 OLM_REPO=fosrl/olm  curl -fsSL .../get-olm.sh | bash
 ```
 
-### Run command (after install)
-
-Since Newt now acts as an Edge Ingress (binding to ports 53/80/443), it requires root privileges:
-
-```bash
-# Same as what the Pangolin UI shows (added sudo):
-sudo newt --id <NEWT_ID> --secret <SECRET> --endpoint https://proxy.visnovsky.us
-
-# OLM (typically installed via the Pangolin UI dialog)
-olm --id <OLM_ID> --secret <SECRET> --endpoint https://proxy.visnovsky.us
-```
+> When contributing back upstream, change default `REPO` in scripts to `fosrl/newt` / `fosrl/olm`.
 
 ## 2. DNS Authority Setup (Production)
 
-The DNS Authority feature lets Newt/OLM sites act as authoritative DNS servers for individual resources, enabling health-based routing. This is separate from the basic wildcard domain setup.
+Per-resource authoritative DNS via Newt sites. Redundancy = multiple Newt sites with targets for the same resource.
 
-### Required DNS Records
-
-For each resource with DNS Authority enabled (e.g., `app.example.com`), add these records at your registrar:
+### DNS Records
 
 ```
 app.example.com      NS  ns1.app.example.com
-ns1.app.example.com  A   [Newt/Site 1 Public IP]
-```
+ns1.app.example.com  A   [Newt Site 1 IP]
 
-For redundancy, add a second NS pointing to your OLM site:
-
-```
+# Redundancy (second Newt site):
 app.example.com      NS  ns2.app.example.com
-ns2.app.example.com  A   [OLM/Site 2 Public IP]
+ns2.app.example.com  A   [Newt Site 2 IP]
 ```
 
-OLM receives the same zone configs as Newt via WebSocket and serves identical authoritative responses on port 53. Adding `ns2` ensures DNS resolution still works if Site 1 goes down. The authority server advertises all healthy targets as `ns1`, `ns2`, etc. in NS responses and includes glue A-records in the Additional section.
+Must be explicit records — wildcard won't work for NS delegation (needs glue records).
 
-These must be **explicit records** — don't rely on a `*.example.com` wildcard to resolve the nameserver hostnames. NS delegation requires glue records that the parent zone serves as additional section data before your authority server is reachable.
+### Requirements
 
-### Other Requirements
+- Port 53 (UDP/TCP) open on site firewalls
+- Public IP set on each site in Pangolin
+- DNS Authority enabled on both the **site** and the **resource**
+- Pangolin UI shows exact records: Resource → Intelligent DNS Routing
 
-- **Port 53 (UDP/TCP)** open on site firewalls
-- **Public IP configured** on each site in Pangolin
-- **DNS Authority enabled** on both the **site** and the **resource** in Pangolin
-- The Pangolin UI shows the exact records needed under Resource → Intelligent DNS Routing
+### How it works
 
-### How It Works
+1. Pangolin pushes zone configs to Newt via WebSocket
+2. Newt binds :53, serves A/NS/SOA responses
+3. A-records selected by routing policy (failover / round-robin / all-healthy) + health status
+4. NS/SOA reference `ns1.{resource.fullDomain}`
 
-1. Pangolin pushes zone configs to Newt (and OLM for local/VPN redundancy) via WebSocket
-2. Newt/OLM bind port 53 and serve authoritative A, NS, and SOA responses
-3. A-record responses are selected based on routing policy (failover, round-robin, or all-healthy) and target health status
-4. NS/SOA responses reference `ns1.{resource.fullDomain}`
+### Wildcard domains vs DNS Authority
 
-### Not the Same as Wildcard Domains
-
-| | Wildcard Domain | DNS Authority |
+| | Wildcard | DNS Authority |
 |---|---|---|
-| **Scope** | All resources on a domain | Per-resource |
-| **DNS records** | `*.example.com` + `example.com` A-records → server IP | NS + glue A-record per resource subdomain |
-| **Routing** | Static — Pangolin handles internally via reverse proxy | Dynamic — sites respond to DNS queries based on health |
-| **Setup in Pangolin** | Org Settings → Domains | Resource Settings → Intelligent DNS Routing |
+| Scope | All resources on domain | Per-resource |
+| Records | `*.example.com` A → server IP | NS + glue A per subdomain |
+| Routing | Static (reverse proxy) | Dynamic (health-based DNS) |
+| Setup | Org → Domains | Resource → Intelligent DNS Routing |
+
+## 3. Local Test Stack
 
 ### Architecture
 
@@ -163,59 +118,41 @@ These must be **explicit records** — don't rely on a `*.example.com` wildcard 
 │                             │                 │                      │          │
 │                             ▼                 ▼                      │          │
 │                      ┌──────────────┐  ┌──────────────┐     ┌────────┴─────┐    │
-│                      │     OLM      │  │ Test Client  │     │  Backend 2   │    │
+│                      │   Newt 2     │  │ Test Client  │     │  Backend 2   │    │
 │                      │ (Redundant   │  │ 172.28.0.100 │     │  172.28.0.21 │    │
-│                      │   NS/Auth)   │  │ DNS→Newt     │     │    :80       │    │
+│                      │   NS site)   │  │ DNS→Newt     │     │    :80       │    │
 │                      └──────────────┘  └──────────────┘     └──────────────┘    │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Start the test stack
+### Usage
 
 ```bash
 cd testing/
-
-# Fresh start (clears DB)
 docker compose down -v && docker compose up -d
-
-# Watch Pangolin compile (first start takes ~60s)
-docker logs test-pangolin -f
-
-# Check all services
+docker logs test-pangolin -f          # first start ~60s
 docker compose ps
 ```
 
-**Host port mappings:**
-
-| Service | Host Port | URL / Command |
-|---------|-----------|---------------|
+| Service | Port | Access |
+|---------|------|--------|
 | Pangolin UI | 3000 | http://localhost:3000 |
 | Pangolin API | 3001 | http://localhost:3001/api/v1/health |
 | DNS Authority | 5353 | `dig @localhost -p 5353 app.test.local A` |
 
-### Run tests
+### Tests
 
 ```bash
 ./test-stack.sh test
-# or directly:
-docker compose exec test-client bash /scripts/run-tests.sh
-```
 
-### Test Scenarios
-
-```bash
-# DNS Authority resolution
+# Manual:
 dig @localhost -p 5353 app.test.local A
-
-# From inside test-client
 docker exec test-client dig @172.28.0.10 app.test.local A
+curl -sI http://localhost:8080/ | grep Location          # Auth proxy → 302
 
-# Auth Proxy redirect (unauthenticated → 302)
-curl -sI http://localhost:8080/ | grep Location
-
-# Health-based failover
+# Failover:
 docker compose stop backend
-dig @localhost -p 5353 app.test.local A    # Should return secondary IP
+dig @localhost -p 5353 app.test.local A                  # → secondary IP
 docker compose start backend
 ```

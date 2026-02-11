@@ -292,7 +292,7 @@ cmd_release() {
 
 Components:
 - Newt (site agent with DNS Authority & Auth Proxy)
-- OLM (redundant NS client)
+- OLM (machine client)
 
 Built from local branches on $(date -u +"%Y-%m-%d %H:%M UTC").
 
