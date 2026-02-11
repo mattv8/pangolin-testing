@@ -37,6 +37,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: mattv8/${{ matrix.component }}
+          ref: dns-authority
           path: ${{ matrix.component }}
 
       - name: Set up Go
@@ -151,6 +152,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: mattv8/${{ matrix.component }}
+          ref: dns-authority
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -199,6 +201,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: mattv8/${{ matrix.component }}
+          ref: dns-authority
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
