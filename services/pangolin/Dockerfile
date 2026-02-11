@@ -27,7 +27,7 @@ RUN cp drizzle.pg.config.ts drizzle.config.ts
 RUN cp server/setup/migrationsPg.ts server/setup/migrations.ts
 
 # Generate database migrations
-RUN npm run db:generate
+RUN npm run db:pg:generate
 
 # Expose ports (Next.js, API, WebSocket)
 EXPOSE 3000 3001 3002
