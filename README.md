@@ -67,9 +67,43 @@ OLM_REPO=fosrl/olm  curl -fsSL .../get-olm.sh | bash
 
 ## 2. DNS Authority Setup (Production)
 
-Per-resource authoritative DNS via Newt sites. Redundancy = multiple Newt sites with targets for the same resource.
+### Domain-Level DNS Authority (Wildcard Failover)
 
-### DNS Records
+When a site enables DNS Authority, **all wildcard domains** with resources on that site automatically get wildcard zone configs pushed to Newt. This provides domain-wide failover using your existing wildcard certs.
+
+#### DNS Records (at your registrar)
+
+```
+docker.visnovsky.us      NS  ns1.docker.visnovsky.us
+docker.visnovsky.us      NS  ns2.docker.visnovsky.us
+ns1.docker.visnovsky.us  A   68.142.136.236   (DCA)
+ns2.docker.visnovsky.us  A   136.38.238.75    (DCB)
+```
+
+Any query for `*.docker.visnovsky.us` now goes to your Newt instances, which return the healthy site IP based on target health checks.
+
+#### How it works
+
+1. User enables DNS Authority on a site + sets public IP
+2. Pangolin automatically finds all wildcard domains with resources on that site
+3. For each domain, builds a `*.domain` zone with all DNS Authority sites as targets
+4. Pushes zone config to every DNS Authority Newt via WebSocket
+5. On DNS query, Newt returns the healthy site's IP per routing policy
+6. Health check updates automatically refresh the zone targets
+
+#### Setup steps
+
+1. **Sites**: Edit each site → enable DNS Authority + set public IP
+2. **DNS**: Add NS + glue A records at your registrar (above)
+3. **Done** — wildcard domains are opted-in automatically
+
+No per-resource DNS Authority toggle needed for domain-level failover.
+
+### Per-Resource DNS Authority (Optional)
+
+For individual subdomain routing with per-resource policies (different TTL, routing policy per resource).
+
+#### DNS Records
 
 ```
 app.example.com      NS  ns1.app.example.com
@@ -86,24 +120,27 @@ Must be explicit records — wildcard won't work for NS delegation (needs glue r
 
 - Port 53 (UDP/TCP) open on site firewalls
 - Public IP set on each site in Pangolin
-- DNS Authority enabled on both the **site** and the **resource**
-- Pangolin UI shows exact records: Resource → Intelligent DNS Routing
+- DNS Authority enabled on the **site**
+- For domain-level: wildcard domain configured in Org → Domains
+- For per-resource: DNS Authority also enabled on the **resource**
 
 ### How it works
 
-1. Pangolin pushes zone configs to Newt via WebSocket
+1. Pangolin pushes zone configs to Newt via WebSocket (on site toggle, Newt connect, and health updates)
 2. Newt binds :53, serves A/NS/SOA responses
 3. A-records selected by routing policy (failover / round-robin / all-healthy) + health status
-4. NS/SOA reference `ns1.{resource.fullDomain}`
+4. NS/SOA reference `ns1.{zone domain}`
 
-### Wildcard domains vs DNS Authority
+### Wildcard domains vs DNS Authority (comparison)
 
-| | Wildcard | DNS Authority |
-|---|---|---|
-| Scope | All resources on domain | Per-resource |
-| Records | `*.example.com` A → server IP | NS + glue A per subdomain |
-| Routing | Static (reverse proxy) | Dynamic (health-based DNS) |
-| Setup | Org → Domains | Resource → Intelligent DNS Routing |
+| | Wildcard (static) | Domain-Level DNS Authority | Per-Resource DNS Authority |
+|---|---|---|---|
+| Scope | All resources on domain | All resources on domain | Single resource |
+| Records | `*.example.com` A → server IP | NS + glue A for parent zone | NS + glue A per subdomain |
+| Routing | Static (single IP) | Dynamic (health-based DNS) | Dynamic (health-based DNS) |
+| Failover | None | Automatic | Automatic |
+| Setup | Org → Domains | Site → DNS Authority toggle | Resource → DNS Authority toggle |
+| Cert | Wildcard cert works | Wildcard cert works | Individual cert needed |
 
 ## 3. Local Test Stack
 

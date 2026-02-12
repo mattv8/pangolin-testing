@@ -13,7 +13,7 @@ app:
 
 domains:
     test-domain:
-        base_domain: "test.local"
+        base_domain: "test.dev"
 
 server:
     secret: "test-secret-for-local-development-do-not-use-in-production-32chars!"
@@ -37,7 +37,7 @@ flags:
 
 users:
     server_admin:
-        email: "admin@test.local"
+        email: "admin@test.dev"
         password: "TestAdmin123!"
 
 settings:
