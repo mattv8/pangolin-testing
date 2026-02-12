@@ -59,11 +59,42 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3001/api/v1/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:3001/api/v1/"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # ===========================================
+  # Gerbil Exit Node (WireGuard gateway)
+  # ===========================================
+  gerbil:
+    image: fosrl/gerbil:latest
+    container_name: test-gerbil
+    restart: unless-stopped
+    networks:
+      pangolin-net:
+        ipv4_address: 172.28.0.5
+    command:
+      - --reachableAt=http://gerbil:3004
+      - --generateAndSaveKeyTo=/var/config/key
+      - --remoteConfig=http://pangolin:3002/api/v1/
+    volumes:
+      - ./config/gerbil:/var/config
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    ports:
+      - "51820:51820/udp"   # WireGuard for Newt sites
+    depends_on:
+      pangolin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "cat /sys/class/net/wg0/operstate 2>/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   # ===========================================
   # Newt Site Agent (with DNS Authority)
@@ -94,7 +125,10 @@ services:
     volumes:
       - ./config/newt:/etc/newt
     depends_on:
-      - pangolin
+      pangolin:
+        condition: service_healthy
+      gerbil:
+        condition: service_healthy
 
   # ===========================================
   # Secondary Newt Site Agent (for DNS failover)
@@ -125,7 +159,10 @@ services:
     volumes:
       - ./config/newt:/etc/newt
     depends_on:
-      - pangolin
+      pangolin:
+        condition: service_healthy
+      gerbil:
+        condition: service_healthy
 
   # ===========================================
   # Mock Backend Application (simulates real app)

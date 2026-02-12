@@ -3,7 +3,10 @@
 
 gerbil:
     start_port: 51820
-    base_endpoint: "pangolin"
+    base_endpoint: "172.28.0.5"
+    subnet_group: "100.89.137.0/20"
+    block_size: 24
+    site_block_size: 30
 
 app:
     dashboard_url: "http://localhost:3001"
