@@ -28,6 +28,8 @@ sudo journalctl -u newt -f
 sudo cp /usr/local/bin/newt.official /usr/local/bin/newt && sudo systemctl restart newt
 ```
 
+> **Note on Port 53 conflict:** If Newt fails to start because port 53 is in use by `systemd-resolved`, you can either disable resolved: `sudo systemctl disable --now systemd-resolved`, or bind Newt to a specific IP using the `--dns-bind` flag in the service file.
+
 ### OLM (binary — no DNS Authority, optional)
 
 Only if testing OLM-specific changes. DNS Authority runs on Newt, not OLM.
