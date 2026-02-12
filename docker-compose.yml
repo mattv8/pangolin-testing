@@ -97,6 +97,37 @@ services:
       - pangolin
 
   # ===========================================
+  # Secondary Newt Site Agent (for DNS failover)
+  # ===========================================
+  newt-secondary:
+    build:
+      context: ../newt
+      dockerfile: ../testing/services/newt/Dockerfile
+    container_name: test-newt-secondary
+    networks:
+      pangolin-net:
+        ipv4_address: 172.28.0.11
+    ports:
+      - "5354:53/udp"     # DNS Authority (Secondary)
+      - "5354:53/tcp"     # DNS Authority (Secondary TCP)
+      - "8089:8080"     # Auth Proxy HTTP
+      - "8449:8443"     # Auth Proxy HTTPS
+    environment:
+      - PANGOLIN_ENDPOINT=http://pangolin:3002
+      - NEWT_ID=test-newt-002
+      - NEWT_SECRET=test-secret-for-local-development-only
+      - LOG_LEVEL=DEBUG
+      - DNS_AUTHORITY_ENABLED=true
+      - AUTH_PROXY_ENABLED=true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ./config/newt:/etc/newt
+    depends_on:
+      - pangolin
+
+  # ===========================================
   # Mock Backend Application (simulates real app)
   # ===========================================
   backend:
@@ -145,9 +176,11 @@ services:
         ipv4_address: 172.28.0.100
     dns:
       - 172.28.0.10  # Point to Newt's DNS Authority
+      - 172.28.0.11  # Secondary Newt
     environment:
       - PANGOLIN_URL=http://pangolin:3001
       - NEWT_DNS=172.28.0.10
+      - NEWT_DNS_SECONDARY=172.28.0.11
       - BACKEND_IP=172.28.0.20
       - TEST_DOMAIN=app.test.local
     volumes:
@@ -155,6 +188,7 @@ services:
       - ./results:/results
     depends_on:
       - newt
+      - newt-secondary
       - backend
       - backend-secondary
     stdin_open: true

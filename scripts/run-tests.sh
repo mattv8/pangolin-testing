@@ -81,6 +81,16 @@ test_infrastructure() {
         fail "Cannot reach Newt DNS at $NEWT_DNS:53"
     fi
 
+    # Test 2b: Can reach Secondary Newt DNS port
+    if [ -n "$NEWT_DNS_SECONDARY" ]; then
+        log "Testing Secondary Newt DNS port connectivity..."
+        if nc -z -w5 $NEWT_DNS_SECONDARY 53 2>/dev/null; then
+            pass "Secondary Newt DNS port 53 is accessible"
+        else
+            fail "Cannot reach Secondary Newt DNS at $NEWT_DNS_SECONDARY:53"
+        fi
+    fi
+
     # Test 3: Can reach primary backend
     log "Testing primary backend connectivity..."
     if curl -s --connect-timeout 5 "http://$BACKEND_PRIMARY/health" > /dev/null 2>&1; then

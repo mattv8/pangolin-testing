@@ -92,6 +92,27 @@ else
     echo "    DNS Authority enabled, publicIp: 172.28.0.10"
 fi
 
+# Step 7b: Create secondary site (skip if exists)
+echo "[6/8b] Creating secondary site (Newt 2)..."
+SITE2_EXISTS=$(curl -s -b "$COOKIES" "$BASE/site/2" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
+if [ "$SITE2_EXISTS" = "True" ]; then
+    echo "    Secondary site already exists, updating DNS Authority settings..."
+    curl -s -X POST -b "$COOKIES" "$BASE/site/2" \
+        -H "Content-Type: application/json" \
+        -d '{"dnsAuthorityEnabled":true,"publicIp":"172.28.0.11"}' >/dev/null
+else
+    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/site" \
+        -H "Content-Type: application/json" \
+        -d '{"name":"Test Site Secondary","type":"newt","newtId":"test-newt-002","secret":"test-secret-for-local-development-only"}' >/dev/null
+    echo "    Secondary site created with Newt ID: test-newt-002"
+
+    # Enable DNS Authority and set publicIp
+    curl -s -X POST -b "$COOKIES" "$BASE/site/2" \
+        -H "Content-Type: application/json" \
+        -d '{"dnsAuthorityEnabled":true,"publicIp":"172.28.0.11"}' >/dev/null
+    echo "    DNS Authority enabled on secondary site, publicIp: 172.28.0.11"
+fi
+
 # Step 8: Create resource (skip if exists)
 echo "[7/8] Creating resource app.test.dev..."
 RESOURCE_EXISTS=$(curl -s -b "$COOKIES" "$BASE/resource/1" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
@@ -100,6 +121,12 @@ if [ "$RESOURCE_EXISTS" = "True" ]; then
     curl -s -X POST -b "$COOKIES" "$BASE/resource/1" \
         -H "Content-Type: application/json" \
         -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"failover"}' >/dev/null
+
+    # Try adding secondary target if it might be missing
+    echo "    Ensuring secondary target exists..."
+    curl -s -X PUT -b "$COOKIES" "$BASE/resource/1/target" \
+        -H "Content-Type: application/json" \
+        -d '{"siteId":2,"ip":"172.28.0.21","port":80,"method":"http","enabled":true}' >/dev/null || true
 else
     curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/resource" \
         -H "Content-Type: application/json" \
@@ -111,6 +138,12 @@ else
         -H "Content-Type: application/json" \
         -d '{"siteId":1,"ip":"172.28.0.20","port":80,"method":"http","enabled":true}' >/dev/null
     echo "    Target added: 172.28.0.20:80 (backend)"
+
+    # Add secondary target (for failover)
+    curl -s -X PUT -b "$COOKIES" "$BASE/resource/1/target" \
+        -H "Content-Type: application/json" \
+        -d '{"siteId":2,"ip":"172.28.0.21","port":80,"method":"http","enabled":true}' >/dev/null
+    echo "    Target added: 172.28.0.21:80 (secondary backend)"
 
     # Enable DNS Authority
     curl -s -X POST -b "$COOKIES" "$BASE/resource/1" \
@@ -129,24 +162,28 @@ echo "=== DNS Authority Verification ==="
 echo ""
 
 RESULT_APP=$(dig @localhost -p 5353 app.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_APP2=$(dig @localhost -p 5354 app.test.dev A +short 2>/dev/null || echo "FAILED")
 RESULT_WILD=$(dig @localhost -p 5353 random.test.dev A +short 2>/dev/null || echo "FAILED")
 
-echo "  app.test.dev     -> ${RESULT_APP:-EMPTY}"
-echo "  random.test.dev  -> ${RESULT_WILD:-EMPTY}"
+echo "  app.test.dev (Newt 1) -> ${RESULT_APP:-EMPTY}"
+echo "  app.test.dev (Newt 2) -> ${RESULT_APP2:-EMPTY}"
+echo "  random.test.dev       -> ${RESULT_WILD:-EMPTY}"
 echo ""
 
-if [ "$RESULT_APP" = "172.28.0.10" ] && [ "$RESULT_WILD" = "172.28.0.10" ]; then
-    echo "SUCCESS: DNS Authority is working!"
-    echo "  - Resource zone (app.test.dev) resolves correctly"
+if [ "$RESULT_APP" = "172.28.0.10" ] && [ "$RESULT_APP2" = "172.28.0.10" ] && [ "$RESULT_WILD" = "172.28.0.10" ]; then
+    echo "SUCCESS: DNS Authority is working on both sites!"
+    echo "  - Resource zone (app.test.dev) resolves correctly on primary and secondary"
     echo "  - Wildcard domain zone (*.test.dev) resolves correctly"
 else
     echo "WARNING: DNS resolution may not be fully working yet."
     echo "  Check: docker logs test-newt 2>&1 | grep -i dns"
+    echo "  Check: docker logs test-newt-secondary 2>&1 | grep -i dns"
     echo "  Check: docker logs test-pangolin 2>&1 | grep -i dns"
 fi
 
 echo ""
 echo "=== Test Commands ==="
 echo "  dig @localhost -p 5353 app.test.dev A +short"
+echo "  dig @localhost -p 5354 app.test.dev A +short"
 echo "  dig @localhost -p 5353 anything.test.dev A +short"
 echo "  dig @localhost -p 5353 foo.bar.test.dev A +short"
