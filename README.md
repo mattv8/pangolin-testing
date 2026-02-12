@@ -18,7 +18,7 @@ docker compose pull pangolin && docker compose up -d pangolin
 
 ```bash
 sudo cp /usr/local/bin/newt /usr/local/bin/newt.official
-curl -fsSL https://raw.githubusercontent.com/mattv8/pangolin-testing/main/scripts/get-newt.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mattv8/pangolin-testing/main/scripts/get-newt.sh | GITHUB_TOKEN=<PAT> bash
 sudo newt --version && sudo systemctl restart newt
 sudo journalctl -u newt -f
 
@@ -32,7 +32,7 @@ Only if testing OLM-specific changes. DNS Authority runs on Newt, not OLM.
 
 ```bash
 sudo cp /usr/local/bin/olm /usr/local/bin/olm.official
-curl -fsSL https://raw.githubusercontent.com/mattv8/pangolin-testing/main/scripts/get-olm.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mattv8/pangolin-testing/main/scripts/get-olm.sh | GITHUB_TOKEN=<PAT> bash
 sudo olm --version && sudo systemctl restart olm
 
 # Rollback:

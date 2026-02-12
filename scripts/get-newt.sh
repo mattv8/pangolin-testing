@@ -20,6 +20,12 @@ NC='\033[0m'
 REPO="${NEWT_REPO:-mattv8/pangolin-testing}"
 GITHUB_API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 
+# Auth header for private repos (set GITHUB_TOKEN env var)
+AUTH_HEADER=""
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    AUTH_HEADER="Authorization: token ${GITHUB_TOKEN}"
+fi
+
 print_status()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 print_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
@@ -28,9 +34,9 @@ get_latest_version() {
     local latest_info
 
     if command -v curl >/dev/null 2>&1; then
-        latest_info=$(curl -fsSL "$GITHUB_API_URL" 2>/dev/null)
+        latest_info=$(curl -fsSL ${AUTH_HEADER:+-H "$AUTH_HEADER"} "$GITHUB_API_URL" 2>/dev/null)
     elif command -v wget >/dev/null 2>&1; then
-        latest_info=$(wget -qO- "$GITHUB_API_URL" 2>/dev/null)
+        latest_info=$(wget -qO- ${AUTH_HEADER:+--header="$AUTH_HEADER"} "$GITHUB_API_URL" 2>/dev/null)
     else
         print_error "Neither curl nor wget is available." >&2
         exit 1
@@ -119,9 +125,9 @@ install_newt() {
     print_status "Downloading newt from ${download_url}"
 
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$download_url" -o "$temp_file"
+        curl -fsSL ${AUTH_HEADER:+-H "$AUTH_HEADER"} -L "$download_url" -o "$temp_file"
     elif command -v wget >/dev/null 2>&1; then
-        wget -q "$download_url" -O "$temp_file"
+        wget -q ${AUTH_HEADER:+--header="$AUTH_HEADER"} "$download_url" -O "$temp_file"
     else
         print_error "Neither curl nor wget is available."
         exit 1
