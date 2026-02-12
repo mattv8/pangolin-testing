@@ -139,7 +139,7 @@ install_olm() {
     # For public repos, use the direct download URL
     local download_url=""
     if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${RELEASE_INFO:-}" ]; then
-        local asset_url=$(echo "$RELEASE_INFO" | grep -B2 "\"name\": \"${binary_name}\"" | grep '"url"' | head -1 | sed 's/.*"url": *"\([^"]*\)".*/\1/')
+        local asset_url=$(echo "$RELEASE_INFO" | grep -B5 "\"name\": \"${binary_name}\"" | grep '"url":.*releases/assets' | head -1 | sed 's/.*"url": *"\([^"]*\)".*/\1/')
         if [ -n "$asset_url" ]; then
             download_url="$asset_url"
             print_status "Downloading olm via API: ${binary_name}"
