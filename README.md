@@ -144,56 +144,104 @@ Must be explicit records — wildcard won't work for NS delegation (needs glue r
 
 ## 3. Local Test Stack
 
+### Prerequisites
+
+- Docker & Docker Compose
+- WireGuard kernel module loaded on the host (required by Gerbil exit node):
+  ```bash
+  sudo modprobe wireguard    # one-time per boot
+  ```
+
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              Docker Network (172.28.0.0/16)                     │
-│                                                                                 │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐   │
-│  │  PostgreSQL  │    │   Pangolin   │    │     Newt     │    │   Backend    │   │
-│  │  172.28.0.2  │◄──►│  172.28.0.3  │◄──►│  172.28.0.10 │◄──►│  172.28.0.20 │   │
-│  │    :5432     │    │ :3000-3002   │    │ :53 :8080    │    │    :80       │   │
-│  └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘   │
-│                             │ WS              │ DNS Auth             ▲          │
-│                             │                 │                      │          │
-│                             ▼                 ▼                      │          │
-│                      ┌──────────────┐  ┌──────────────┐     ┌────────┴─────┐    │
-│                      │   Newt 2     │  │ Test Client  │     │  Backend 2   │    │
-│                      │ (Redundant   │  │ 172.28.0.100 │     │  172.28.0.21 │    │
-│                      │   NS site)   │  │ DNS→Newt     │     │    :80       │    │
-│                      └──────────────┘  └──────────────┘     └──────────────┘    │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│                              Docker Network (172.28.0.0/16)                          │
+│                                                                                      │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                            │
+│  │  PostgreSQL  │    │   Pangolin   │    │   Gerbil     │                            │
+│  │  172.28.0.2  │◄──►│  172.28.0.3  │◄──►│  172.28.0.5  │                            │
+│  │    :5432     │    │ :3000-3002   │    │ :51820/udp   │                            │
+│  └──────────────┘    └──────┬───────┘    │ :3004 (HTTP) │                            │
+│                             │ WS         └──────┬───────┘                            │
+│                             │                   │ WireGuard                          │
+│                             ▼                   ▼                                    │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐        │
+│  │   Newt 1     │    │   Newt 2     │    │  Backend 1   │    │  Backend 2   │        │
+│  │  172.28.0.10 │    │  172.28.0.11 │    │  172.28.0.20 │    │  172.28.0.21 │        │
+│  │ :53 :8080    │    │ :53 :8080    │    │    :80       │    │    :80       │        │
+│  │  :8443       │    │  :8080 :8443 │    └──────────────┘    └──────────────┘        │
+│  └──────────────┘    └──────────────┘                                                │
+│         ▲                   ▲                                                        │
+│         │ DNS               │ DNS                                                    │
+│         └─────────┬─────────┘                                                        │
+│            ┌──────┴───────┐                                                          │
+│            │ Test Client  │                                                          │
+│            │ 172.28.0.100 │                                                          │
+│            └──────────────┘                                                          │
+└──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Usage
 
 ```bash
 cd testing/
+
+# Ensure WireGuard kernel module is loaded
+sudo modprobe wireguard
+
+# Start stack (first start builds images, ~60-90s)
 docker compose down -v && docker compose up -d
-docker logs test-pangolin -f          # first start ~60s
-docker compose ps
+docker compose ps                        # all services should be healthy
+
+# Bootstrap test data (creates admin, org, sites, resource, targets)
+bash scripts/bootstrap.sh
 ```
 
-| Service | Port | Access |
-|---------|------|--------|
-| Pangolin UI | 3000 | http://localhost:3000 |
-| Pangolin API | 3001 | http://localhost:3001/api/v1/health |
-| DNS Authority | 5353 | `dig @localhost -p 5353 app.test.local A` |
+| Service | IP | Host Port | Access |
+|---------|-----|-----------|--------|
+| Pangolin UI | 172.28.0.3 | 3000 | http://localhost:3000 |
+| Pangolin API | 172.28.0.3 | 3001 | http://localhost:3001/api/v1/ |
+| Pangolin WS | 172.28.0.3 | 3002 | ws://localhost:3002 |
+| Gerbil (exit node) | 172.28.0.5 | 51820/udp | WireGuard tunnel endpoint |
+| Newt 1 DNS | 172.28.0.10 | 5353 | `dig @localhost -p 5353 app.test.dev A` |
+| Newt 2 DNS | 172.28.0.11 | 5354 | `dig @localhost -p 5354 app.test.dev A` |
+| Newt 1 Auth Proxy | 172.28.0.10 | 8080/8443 | http://localhost:8080 |
+| Newt 2 Auth Proxy | 172.28.0.11 | 8089/8449 | http://localhost:8089 |
+| Backend 1 | 172.28.0.20 | — | Internal only |
+| Backend 2 | 172.28.0.21 | — | Internal only |
+| Test Client | 172.28.0.100 | — | `docker exec -it test-client bash` |
+
+### Connection Flow
+
+1. **Gerbil** starts → registers with Pangolin (`POST /api/v1/gerbil/get-config`) → creates WireGuard interface `wg0`
+2. **Newt** connects via WebSocket → registers in backwards-compatible mode → Pangolin sends exit node list
+3. **Newt** pings Gerbil to measure latency → re-registers with ping results
+4. **Pangolin** allocates WireGuard subnet → adds Newt as peer on Gerbil (`POST http://gerbil:3004/peer`)
+5. **Pangolin** sends `newt/wg/connect` → Newt establishes userspace WireGuard tunnel through Gerbil
+6. **Gerbil** reports bandwidth → Pangolin marks site online
+7. **Pangolin** pushes DNS Authority zone configs to Newt via WebSocket
 
 ### Tests
 
 ```bash
-./test-stack.sh test
+# DNS Authority verification
+dig @localhost -p 5353 app.test.dev A +short      # → 172.28.0.10
+dig @localhost -p 5354 app.test.dev A +short      # → 172.28.0.10
+dig @localhost -p 5353 anything.test.dev A +short  # → 172.28.0.10 (wildcard)
 
-# Manual:
-dig @localhost -p 5353 app.test.local A
-docker exec test-client dig @172.28.0.10 app.test.local A
-curl -sI http://localhost:8080/ | grep Location          # Auth proxy → 302
+# Auth Proxy
+curl -sI http://localhost:8080/ | grep Location   # → 302 redirect
 
-# Failover:
+# Failover
 docker compose stop backend
-dig @localhost -p 5353 app.test.local A                  # → secondary IP
+dig @localhost -p 5353 app.test.dev A +short       # → secondary IP
 docker compose start backend
+
+# Check site status in DB
+docker exec test-postgres psql -U pangolin -d pangolin \
+  -c 'SELECT "siteId", "online", "subnet", "endpoint" FROM sites;'
+
+# Check WireGuard peers on Gerbil
+docker logs test-gerbil 2>&1 | grep -i peer
 ```
