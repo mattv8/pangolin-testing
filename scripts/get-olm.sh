@@ -18,7 +18,7 @@ NC='\033[0m'
 
 # GitHub repository info - binaries are released on the testing repo
 REPO="${OLM_REPO:-mattv8/pangolin-testing}"
-GITHUB_API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+GITHUB_API_URL="https://api.github.com/repos/${REPO}/releases"
 
 # Auth header for private repos (set GITHUB_TOKEN env var)
 AUTH_HEADER=""
