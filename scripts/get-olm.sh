@@ -215,8 +215,29 @@ verify_installation() {
 main() {
     print_status "Installing olm from ${REPO}..."
 
-    print_status "Fetching latest version..."
-    VERSION=$(get_latest_version)
+    print_status "Fetching latest release info..."
+
+    # Fetch release info in main scope so RELEASE_INFO is available to install_olm
+    if command -v curl >/dev/null 2>&1; then
+        RELEASE_INFO=$(curl -fsSL ${AUTH_HEADER:+-H "$AUTH_HEADER"} "$GITHUB_API_URL" 2>/dev/null)
+    elif command -v wget >/dev/null 2>&1; then
+        RELEASE_INFO=$(wget -qO- ${AUTH_HEADER:+--header="$AUTH_HEADER"} "$GITHUB_API_URL" 2>/dev/null)
+    else
+        print_error "Neither curl nor wget is available."
+        exit 1
+    fi
+
+    if [ -z "$RELEASE_INFO" ]; then
+        print_error "Failed to fetch release info from ${REPO}"
+        exit 1
+    fi
+
+    VERSION=$(echo "$RELEASE_INFO" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+    if [ -z "$VERSION" ]; then
+        print_error "Could not parse version from GitHub API response"
+        exit 1
+    fi
+    VERSION=$(echo "$VERSION" | sed 's/^v//')
     print_status "Latest version: ${VERSION}"
 
     BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
