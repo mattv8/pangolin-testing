@@ -47,6 +47,9 @@ get_latest_version() {
         exit 1
     fi
 
+    # Store full release info for asset URL resolution
+    RELEASE_INFO="$latest_info"
+
     local version=$(echo "$latest_info" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
 
     if [ -z "$version" ]; then
@@ -118,19 +121,41 @@ install_newt() {
 
     [[ "$platform" == *"windows"* ]] && { binary_name="${binary_name}.exe"; exe_suffix=".exe"; }
 
-    local download_url="${BASE_URL}/${binary_name}"
     local temp_file="/tmp/newt${exe_suffix}"
     local final_path="${install_dir}/newt${exe_suffix}"
 
-    print_status "Downloading newt from ${download_url}"
+    # For private repos with GITHUB_TOKEN, use the API assets endpoint
+    # For public repos, use the direct download URL
+    local download_url=""
+    if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${RELEASE_INFO:-}" ]; then
+        # Extract the asset API URL for this binary from the release info
+        local asset_url=$(echo "$RELEASE_INFO" | grep -B2 "\"name\": \"${binary_name}\"" | grep '"url"' | head -1 | sed 's/.*"url": *"\([^"]*\)".*/\1/')
+        if [ -n "$asset_url" ]; then
+            download_url="$asset_url"
+            print_status "Downloading newt via API: ${binary_name}"
+            if command -v curl >/dev/null 2>&1; then
+                curl -fsSL -H "$AUTH_HEADER" -H "Accept: application/octet-stream" -L "$download_url" -o "$temp_file"
+            elif command -v wget >/dev/null 2>&1; then
+                wget -q --header="$AUTH_HEADER" --header="Accept: application/octet-stream" "$download_url" -O "$temp_file"
+            else
+                print_error "Neither curl nor wget is available."
+                exit 1
+            fi
+        fi
+    fi
 
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL ${AUTH_HEADER:+-H "$AUTH_HEADER"} -L "$download_url" -o "$temp_file"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q ${AUTH_HEADER:+--header="$AUTH_HEADER"} "$download_url" -O "$temp_file"
-    else
-        print_error "Neither curl nor wget is available."
-        exit 1
+    # Fallback: direct download URL (works for public repos)
+    if [ ! -f "$temp_file" ] || [ ! -s "$temp_file" ]; then
+        download_url="${BASE_URL}/${binary_name}"
+        print_status "Downloading newt from ${download_url}"
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL ${AUTH_HEADER:+-H "$AUTH_HEADER"} -L "$download_url" -o "$temp_file"
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q ${AUTH_HEADER:+--header="$AUTH_HEADER"} "$download_url" -O "$temp_file"
+        else
+            print_error "Neither curl nor wget is available."
+            exit 1
+        fi
     fi
 
     mkdir -p "$install_dir"
