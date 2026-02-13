@@ -1,0 +1,26 @@
+services:
+  dnsdist:
+    build: .
+    container_name: dnsdist-dcb
+    hostname: dnsdist-dcb
+    network_mode: host
+    user: root
+    cap_add:
+      - NET_BIND_SERVICE
+    volumes:
+      - ./dnsdist.conf:/etc/dnsdist/dnsdist.conf:ro
+      - dnsdist-data:/var/lib/dnsdist
+      - dnsdist-logs:/var/log/dnsdist
+    restart: unless-stopped
+    environment:
+      - DNSDIST_SITE=DCB
+      - TZ=America/Denver
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  dnsdist-data:
+  dnsdist-logs:
