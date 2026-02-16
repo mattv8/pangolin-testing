@@ -27,10 +27,10 @@ RUN cp drizzle.pg.config.ts drizzle.config.ts
 RUN cp server/setup/migrationsPg.ts server/setup/migrations.ts
 
 # Generate database migrations
-RUN npm run db:pg:generate
+RUN npm run db:generate
 
 # Expose ports (Next.js, API, WebSocket)
 EXPOSE 3000 3001 3002
 
 # Run database push then start dev server
-CMD ["sh", "-c", "npm run db:pg:push && npm run dev"]
+CMD ["sh", "-c", "npm run db:push && npm run dev"]

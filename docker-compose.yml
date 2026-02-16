@@ -219,7 +219,7 @@ services:
       - NEWT_DNS=172.28.0.10
       - NEWT_DNS_SECONDARY=172.28.0.11
       - BACKEND_IP=172.28.0.20
-      - TEST_DOMAIN=app.test.local
+      - TEST_DOMAIN=app.test.dev
     volumes:
       - ./scripts:/scripts:ro
       - ./results:/results

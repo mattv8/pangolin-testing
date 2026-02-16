@@ -36,19 +36,19 @@ log() {
 
 pass() {
     echo -e "${GREEN}✅ PASS:${NC} $1"
-    ((passed_tests++))
-    ((total_tests++))
+    ((passed_tests++)) || true
+    ((total_tests++)) || true
 }
 
 fail() {
     echo -e "${RED}❌ FAIL:${NC} $1"
-    ((failed_tests++))
-    ((total_tests++))
+    ((failed_tests++)) || true
+    ((total_tests++)) || true
 }
 
 skip() {
     echo -e "${YELLOW}⏭️  SKIP:${NC} $1"
-    ((total_tests++))
+    ((total_tests++)) || true
 }
 
 header() {
