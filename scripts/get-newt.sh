@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 
 # GitHub repository info
 REPO="${NEWT_REPO:-mattv8/pangolin-testing}"
-GITHUB_API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+GITHUB_API_URL="https://api.github.com/repos/${REPO}/releases"
 
 # Function to print colored output
 print_status() {
