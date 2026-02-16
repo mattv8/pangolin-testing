@@ -18,9 +18,7 @@ docker compose pull pangolin && docker compose up -d pangolin
 
 ```bash
 sudo cp /usr/local/bin/newt /usr/local/bin/newt.official
-export GITHUB_TOKEN=<PAT>
-curl -fsSL -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3.raw" \
-  "https://api.github.com/repos/mattv8/pangolin-testing/contents/scripts/get-newt.sh?ref=main" | bash
+curl -fsSL https://raw.githubusercontent.com/mattv8/pangolin-testing/main/scripts/get-newt.sh | bash
 sudo newt --version && sudo systemctl restart newt
 sudo journalctl -u newt -f
 
@@ -36,9 +34,7 @@ Only if testing OLM-specific changes. DNS Authority runs on Newt, not OLM.
 
 ```bash
 sudo cp /usr/local/bin/olm /usr/local/bin/olm.official
-export GITHUB_TOKEN=<PAT>
-curl -fsSL -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3.raw" \
-  "https://api.github.com/repos/mattv8/pangolin-testing/contents/scripts/get-olm.sh?ref=main" | bash
+curl -fsSL https://raw.githubusercontent.com/mattv8/pangolin-testing/main/scripts/get-olm.sh | bash
 sudo olm --version && sudo systemctl restart olm
 
 # Rollback:
@@ -57,7 +53,7 @@ olm --id <OLM_ID> --secret <SECRET> --endpoint https://proxy.visnovsky.us
 
 ### Install script overrides
 
-Scripts auto-detect OS/arch. Repo must be public at `mattv8/pangolin-testing`.
+Scripts auto-detect OS/arch.
 
 ```bash
 # Override repo (e.g. use upstream):

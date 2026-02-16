@@ -1,11 +1,9 @@
 #!/bin/bash
 
 # Get Newt (Fork) - Cross-platform installation script
-# Installs Newt with DNS Authority features from mattv8/newt releases
 # Usage: curl -fsSL https://raw.githubusercontent.com/mattv8/pangolin-testing/main/scripts/get-newt.sh | bash
 #
-# The upstream script (fosrl/newt/get-newt.sh) uses the same structure.
-# This fork version defaults to mattv8/newt releases but can be overridden:
+# Override repo (e.g. use upstream):
 #   NEWT_REPO=fosrl/newt curl -fsSL .../get-newt.sh | bash
 
 set -e
@@ -14,42 +12,44 @@ set -e
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
-# GitHub repository info - binaries are released on the testing repo
+# GitHub repository info
 REPO="${NEWT_REPO:-mattv8/pangolin-testing}"
-GITHUB_API_URL="https://api.github.com/repos/${REPO}/releases"
+GITHUB_API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 
-# Auth header for private repos (set GITHUB_TOKEN env var)
-AUTH_HEADER=""
-if [ -n "${GITHUB_TOKEN:-}" ]; then
-    AUTH_HEADER="Authorization: token ${GITHUB_TOKEN}"
-fi
+# Function to print colored output
+print_status() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
 
-print_status()  { echo -e "${GREEN}[INFO]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-print_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
+print_warning() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
 
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Function to get latest version from GitHub API
 get_latest_version() {
     local latest_info
 
     if command -v curl >/dev/null 2>&1; then
-        latest_info=$(curl -fsSL ${AUTH_HEADER:+-H "$AUTH_HEADER"} "$GITHUB_API_URL" 2>/dev/null)
+        latest_info=$(curl -fsSL "$GITHUB_API_URL" 2>/dev/null)
     elif command -v wget >/dev/null 2>&1; then
-        latest_info=$(wget -qO- ${AUTH_HEADER:+--header="$AUTH_HEADER"} "$GITHUB_API_URL" 2>/dev/null)
+        latest_info=$(wget -qO- "$GITHUB_API_URL" 2>/dev/null)
     else
-        print_error "Neither curl nor wget is available." >&2
+        print_error "Neither curl nor wget is available. Please install one of them." >&2
         exit 1
     fi
 
     if [ -z "$latest_info" ]; then
-        print_error "Failed to fetch latest version from ${REPO}" >&2
+        print_error "Failed to fetch latest version information" >&2
         exit 1
     fi
 
-    # Store full release info for asset URL resolution
-    RELEASE_INFO="$latest_info"
-
+    # Extract version from JSON response (works without jq)
     local version=$(echo "$latest_info" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
 
     if [ -z "$version" ]; then
@@ -59,6 +59,7 @@ get_latest_version() {
 
     # Remove 'v' prefix if present
     version=$(echo "$version" | sed 's/^v//')
+
     echo "$version"
 }
 
@@ -145,78 +146,80 @@ check_conflicts() {
     fi
 }
 
+# Get installation directory
 get_install_dir() {
-    if [ "$1" = "windows" ]; then
+    if [ "$OS" = "windows" ]; then
         echo "$HOME/bin"
-    elif echo "$PATH" | grep -q "/usr/local/bin" && [ -w "/usr/local/bin" ] 2>/dev/null; then
-        echo "/usr/local/bin"
     else
-        echo "$HOME/.local/bin"
+        # Try to use a directory in PATH, fallback to ~/.local/bin
+        if echo "$PATH" | grep -q "/usr/local/bin"; then
+            if [ -w "/usr/local/bin" ] 2>/dev/null; then
+                echo "/usr/local/bin"
+            else
+                echo "$HOME/.local/bin"
+            fi
+        else
+            echo "$HOME/.local/bin"
+        fi
     fi
 }
 
+# Download and install newt
 install_newt() {
     local platform="$1"
     local install_dir="$2"
     local binary_name="newt_${platform}"
     local exe_suffix=""
 
-    [[ "$platform" == *"windows"* ]] && { binary_name="${binary_name}.exe"; exe_suffix=".exe"; }
+    # Add .exe suffix for Windows
+    if [[ "$platform" == *"windows"* ]]; then
+        binary_name="${binary_name}.exe"
+        exe_suffix=".exe"
+    fi
 
+    local download_url="${BASE_URL}/${binary_name}"
     local temp_file="/tmp/newt${exe_suffix}"
     local final_path="${install_dir}/newt${exe_suffix}"
 
-    # For private repos with GITHUB_TOKEN, use the API assets endpoint
-    # For public repos, use the direct download URL
-    local download_url=""
-    if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${RELEASE_INFO:-}" ]; then
-        # Extract the asset API URL for this binary from the release info
-        # The JSON has "url": "...api..." a few lines before "name": "binary_name"
-        local asset_url=$(echo "$RELEASE_INFO" | grep -B5 "\"name\": \"${binary_name}\"" | grep '"url":.*releases/assets' | head -1 | sed 's/.*"url": *"\([^"]*\)".*/\1/')
-        if [ -n "$asset_url" ]; then
-            download_url="$asset_url"
-            print_status "Downloading newt via API: ${binary_name}"
-            if command -v curl >/dev/null 2>&1; then
-                curl -fsSL -H "$AUTH_HEADER" -H "Accept: application/octet-stream" -L "$download_url" -o "$temp_file"
-            elif command -v wget >/dev/null 2>&1; then
-                wget -q --header="$AUTH_HEADER" --header="Accept: application/octet-stream" "$download_url" -O "$temp_file"
-            else
-                print_error "Neither curl nor wget is available."
-                exit 1
-            fi
-        fi
+    print_status "Downloading newt from ${download_url}"
+
+    # Download the binary
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$download_url" -o "$temp_file"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q "$download_url" -O "$temp_file"
+    else
+        print_error "Neither curl nor wget is available. Please install one of them."
+        exit 1
     fi
 
-    # Fallback: direct download URL (works for public repos)
-    if [ ! -f "$temp_file" ] || [ ! -s "$temp_file" ]; then
-        download_url="${BASE_URL}/${binary_name}"
-        print_status "Downloading newt from ${download_url}"
-        if command -v curl >/dev/null 2>&1; then
-            curl -fsSL ${AUTH_HEADER:+-H "$AUTH_HEADER"} -L "$download_url" -o "$temp_file"
-        elif command -v wget >/dev/null 2>&1; then
-            wget -q ${AUTH_HEADER:+--header="$AUTH_HEADER"} "$download_url" -O "$temp_file"
-        else
-            print_error "Neither curl nor wget is available."
-            exit 1
-        fi
-    fi
-
+    # Create install directory if it doesn't exist
     mkdir -p "$install_dir"
+
+    # Move binary to install directory
     mv "$temp_file" "$final_path"
+
+    # Make executable (not needed on Windows, but doesn't hurt)
     chmod +x "$final_path"
 
     print_status "newt installed to ${final_path}"
 
+    # Check if install directory is in PATH
     if ! echo "$PATH" | grep -q "$install_dir"; then
-        print_warning "Add ${install_dir} to your PATH:"
+        print_warning "Install directory ${install_dir} is not in your PATH."
+        print_warning "Add it to your PATH by adding this line to your shell profile:"
         print_warning "  export PATH=\"${install_dir}:\$PATH\""
     fi
 }
 
+# Verify installation
 verify_installation() {
     local install_dir="$1"
     local exe_suffix=""
-    [[ "$PLATFORM" == *"windows"* ]] && exe_suffix=".exe"
+
+    if [[ "$PLATFORM" == *"windows"* ]]; then
+        exe_suffix=".exe"
+    fi
 
     local newt_path="${install_dir}/newt${exe_suffix}"
 
@@ -225,58 +228,44 @@ verify_installation() {
         print_status "newt version: $("$newt_path" --version 2>/dev/null || echo "unknown")"
         return 0
     else
-        print_error "Installation failed."
+        print_error "Installation failed. Binary not found or not executable."
         return 1
     fi
 }
 
+# Main installation process
 main() {
-    print_status "Installing newt from ${REPO}..."
+    print_status "Installing latest version of newt from ${REPO}..."
 
-    print_status "Fetching latest release info..."
+    # Get latest version
+    print_status "Fetching latest version from GitHub..."
+    VERSION=$(get_latest_version)
+    print_status "Latest version: v${VERSION}"
 
-    # Fetch release info in main scope so RELEASE_INFO is available to install_newt
-    if command -v curl >/dev/null 2>&1; then
-        RELEASE_INFO=$(curl -fsSL ${AUTH_HEADER:+-H "$AUTH_HEADER"} "$GITHUB_API_URL" 2>/dev/null)
-    elif command -v wget >/dev/null 2>&1; then
-        RELEASE_INFO=$(wget -qO- ${AUTH_HEADER:+--header="$AUTH_HEADER"} "$GITHUB_API_URL" 2>/dev/null)
-    else
-        print_error "Neither curl nor wget is available."
-        exit 1
-    fi
-
-    if [ -z "$RELEASE_INFO" ]; then
-        print_error "Failed to fetch release info from ${REPO}"
-        exit 1
-    fi
-
-    VERSION=$(echo "$RELEASE_INFO" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
-    if [ -z "$VERSION" ]; then
-        print_error "Could not parse version from GitHub API response"
-        exit 1
-    fi
-    VERSION=$(echo "$VERSION" | sed 's/^v//')
-    print_status "Latest version: ${VERSION}"
-
+    # Set base URL with the fetched version
     BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
 
+    # Detect platform
     PLATFORM=$(detect_platform)
     print_status "Detected platform: ${PLATFORM}"
 
     # Check for conflicts
     check_conflicts "$PLATFORM"
 
-    local os_part="${PLATFORM%%_*}"
-    INSTALL_DIR=$(get_install_dir "$os_part")
+    # Get install directory
+    INSTALL_DIR=$(get_install_dir)
     print_status "Install directory: ${INSTALL_DIR}"
 
+    # Install newt
     install_newt "$PLATFORM" "$INSTALL_DIR"
 
+    # Verify installation
     if verify_installation "$INSTALL_DIR"; then
-        print_status "newt is ready! Run 'newt --help' to get started"
+        print_status "newt is ready to use! Run 'newt --help' to get started"
     else
         exit 1
     fi
 }
 
+# Run main function
 main "$@"
