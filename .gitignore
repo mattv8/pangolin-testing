@@ -12,3 +12,10 @@ bin/
 # Secrets / credentials (never commit)
 *.env.local
 harbor-creds.txt
+
+# TLS certificates
+config/certificates/**/cert.pem
+config/certificates/**/key.pem
+config/certificates/**/.expires_at
+config/certificates/**/.last_update
+config/certificates/**/.wildcard

@@ -50,6 +50,7 @@ services:
       - POSTGRES_CONNECTION_STRING=postgres://pangolin:pangolin_test_password@postgres:5432/pangolin
     volumes:
       - ./config/pangolin/config.yml:/app/config/config.yml:ro
+      - ./config/certificates:/var/certificates:ro
       # Mount specific source directories for hot-reload (exclude migrations/db)
       - ../pangolin/server/routers:/app/server/routers:ro
       - ../pangolin/server/lib:/app/server/lib:ro
@@ -110,8 +111,8 @@ services:
     ports:
       - "5353:53/udp"     # DNS Authority (use 5353 to avoid conflict with local resolver)
       - "5353:53/tcp"     # DNS Authority (TCP)
-      - "8080:8080"     # Auth Proxy HTTP
-      - "8443:8443"     # Auth Proxy HTTPS
+      - "8080:80"       # Auth Proxy HTTP (container :80 → host :8080)
+      - "8443:443"      # Auth Proxy HTTPS (container :443 → host :8443)
     environment:
       - PANGOLIN_ENDPOINT=http://pangolin:3002
       - NEWT_ID=test-newt-001
@@ -144,8 +145,8 @@ services:
     ports:
       - "5354:53/udp"     # DNS Authority (Secondary)
       - "5354:53/tcp"     # DNS Authority (Secondary TCP)
-      - "8089:8080"     # Auth Proxy HTTP
-      - "8449:8443"     # Auth Proxy HTTPS
+      - "8089:80"       # Auth Proxy HTTP (container :80 → host :8089)
+      - "8449:443"      # Auth Proxy HTTPS (container :443 → host :8449)
     environment:
       - PANGOLIN_ENDPOINT=http://pangolin:3002
       - NEWT_ID=test-newt-002
