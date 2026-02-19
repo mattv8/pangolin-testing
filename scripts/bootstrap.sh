@@ -120,7 +120,7 @@ if [ "$RESOURCE_EXISTS" = "True" ]; then
     echo "    Resource already exists, ensuring DNS Authority enabled..."
     curl -s -X POST -b "$COOKIES" "$BASE/resource/1" \
         -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"failover"}' >/dev/null
+        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin"}' >/dev/null
 
     # Try adding secondary target if it might be missing
     echo "    Ensuring secondary target exists..."
@@ -139,7 +139,7 @@ else
         -d '{"siteId":1,"ip":"172.28.0.20","port":80,"method":"http","enabled":true}' >/dev/null
     echo "    Target added: 172.28.0.20:80 (backend)"
 
-    # Add secondary target (for failover)
+    # Add secondary target
     curl -s -X PUT -b "$COOKIES" "$BASE/resource/1/target" \
         -H "Content-Type: application/json" \
         -d '{"siteId":2,"ip":"172.28.0.21","port":80,"method":"http","enabled":true}' >/dev/null
@@ -148,7 +148,7 @@ else
     # Enable DNS Authority
     curl -s -X POST -b "$COOKIES" "$BASE/resource/1" \
         -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"failover"}' >/dev/null
+        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin"}' >/dev/null
     echo "    DNS Authority enabled on resource"
 fi
 
@@ -227,10 +227,64 @@ if [ "$RESOURCE4_EXISTS" != "True" ]; then
     # Enable DNS Authority + custom headers + setHostHeader + postAuthPath, SSO on
     curl -s -X POST -b "$COOKIES" "$BASE/resource/4" \
         -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"failover","sso":true,"setHostHeader":"backend.internal","headers":[{"name":"X-Custom-Test","value":"hello-from-pangolin"},{"name":"X-Environment","value":"testing"}],"postAuthPath":"/dashboard"}' >/dev/null
+        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","sso":true,"setHostHeader":"backend.internal","headers":[{"name":"X-Custom-Test","value":"hello-from-pangolin"},{"name":"X-Environment","value":"testing"}],"postAuthPath":"/dashboard"}' >/dev/null
     echo "    Created: headers.test.dev (setHostHeader=backend.internal, 2 custom headers, postAuthPath=/dashboard)"
 else
     echo "    Already exists, skipping."
+fi
+
+# --- Resource 5: intelligent DNS routing with health checks ---
+echo "[AP-4] Creating intelligent.test.dev (intelligent routing + health checks)..."
+RESOURCE5_EXISTS=$(curl -s -b "$COOKIES" "$BASE/resource/5" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
+if [ "$RESOURCE5_EXISTS" != "True" ]; then
+    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/resource" \
+        -H "Content-Type: application/json" \
+        -d '{"name":"Intelligent DNS","http":true,"protocol":"tcp","domainId":"test-domain","subdomain":"intelligent"}' >/dev/null
+
+    curl -s -X PUT -b "$COOKIES" "$BASE/resource/5/target" \
+        -H "Content-Type: application/json" \
+        -d '{"siteId":1,"ip":"172.28.0.20","port":80,"method":"http","enabled":true,"priority":50,"hcEnabled":true,"hcScheme":"http","hcHostname":"172.28.0.20","hcPort":80,"hcPath":"/","hcMethod":"GET","hcInterval":5,"hcUnhealthyInterval":5,"hcTimeout":2}' >/dev/null
+
+    curl -s -X PUT -b "$COOKIES" "$BASE/resource/5/target" \
+        -H "Content-Type: application/json" \
+        -d '{"siteId":2,"ip":"172.28.0.21","port":80,"method":"http","enabled":true,"priority":100,"hcEnabled":true,"hcScheme":"http","hcHostname":"172.28.0.21","hcPort":80,"hcPath":"/","hcMethod":"GET","hcInterval":5,"hcUnhealthyInterval":5,"hcTimeout":2}' >/dev/null
+
+    curl -s -X POST -b "$COOKIES" "$BASE/resource/5" \
+        -H "Content-Type: application/json" \
+        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"intelligent","stickySession":true,"sso":false}' >/dev/null
+    echo "    Created: intelligent.test.dev (policy=intelligent, health checks enabled, stickySession=true)"
+else
+    echo "    Already exists, ensuring intelligent routing is configured..."
+    curl -s -X POST -b "$COOKIES" "$BASE/resource/5" \
+        -H "Content-Type: application/json" \
+        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"intelligent","stickySession":true,"sso":false}' >/dev/null || true
+fi
+
+# --- Resource 6: cross-site sticky DNS affinity (roundrobin + sticky) ---
+echo "[AP-5] Creating stickycross.test.dev (cross-site sticky DNS affinity)..."
+RESOURCE6_EXISTS=$(curl -s -b "$COOKIES" "$BASE/resource/6" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
+if [ "$RESOURCE6_EXISTS" != "True" ]; then
+    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/resource" \
+        -H "Content-Type: application/json" \
+        -d '{"name":"Sticky Cross Site","http":true,"protocol":"tcp","domainId":"test-domain","subdomain":"stickycross"}' >/dev/null
+
+    curl -s -X PUT -b "$COOKIES" "$BASE/resource/6/target" \
+        -H "Content-Type: application/json" \
+        -d '{"siteId":1,"ip":"172.28.0.20","port":80,"method":"http","enabled":true,"priority":50}' >/dev/null
+
+    curl -s -X PUT -b "$COOKIES" "$BASE/resource/6/target" \
+        -H "Content-Type: application/json" \
+        -d '{"siteId":2,"ip":"172.28.0.21","port":80,"method":"http","enabled":true,"priority":100}' >/dev/null
+
+    curl -s -X POST -b "$COOKIES" "$BASE/resource/6" \
+        -H "Content-Type: application/json" \
+        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","stickySession":true,"sso":false}' >/dev/null
+    echo "    Created: stickycross.test.dev (targets on site 1 + site 2, stickySession=true)"
+else
+    echo "    Already exists, ensuring sticky cross-site routing is configured..."
+    curl -s -X POST -b "$COOKIES" "$BASE/resource/6" \
+        -H "Content-Type: application/json" \
+        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","stickySession":true,"sso":false}' >/dev/null || true
 fi
 
 echo ""
@@ -248,6 +302,8 @@ RESULT_WILD=$(dig @localhost -p 5353 random.test.dev A +short 2>/dev/null || ech
 RESULT_MULTI=$(dig @localhost -p 5353 multi.test.dev A +short 2>/dev/null || echo "FAILED")
 RESULT_PATH=$(dig @localhost -p 5353 pathtest.test.dev A +short 2>/dev/null || echo "FAILED")
 RESULT_HDRS=$(dig @localhost -p 5353 headers.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_INTEL=$(dig @localhost -p 5353 intelligent.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_STICKYCROSS=$(dig @localhost -p 5353 stickycross.test.dev A +short 2>/dev/null || echo "FAILED")
 
 echo "  app.test.dev (Newt 1)      -> ${RESULT_APP:-EMPTY}"
 echo "  app.test.dev (Newt 2)      -> ${RESULT_APP2:-EMPTY}"
@@ -255,6 +311,8 @@ echo "  random.test.dev            -> ${RESULT_WILD:-EMPTY}"
 echo "  multi.test.dev (Newt 1)    -> ${RESULT_MULTI:-EMPTY}"
 echo "  pathtest.test.dev (Newt 1) -> ${RESULT_PATH:-EMPTY}"
 echo "  headers.test.dev (Newt 1)  -> ${RESULT_HDRS:-EMPTY}"
+echo "  intelligent.test.dev       -> ${RESULT_INTEL:-EMPTY}"
+echo "  stickycross.test.dev       -> ${RESULT_STICKYCROSS:-EMPTY}"
 echo ""
 
 # ===================================================================
@@ -300,19 +358,19 @@ test_result "Sticky session cookie p_sticky present" "$([ -n "$T4_COOKIE" ] && e
 # Test 5: pathtest.test.dev — /api path routes to backend-1
 echo "[T5] pathtest.test.dev — /api path routing"
 T5_BODY=$(docker exec test-client curl -sk https://pathtest.test.dev/api/ --resolve pathtest.test.dev:443:172.28.0.10 2>/dev/null)
-T5_OK=$(echo "$T5_BODY" | grep -c "Backend\|html" || echo "0")
+T5_OK=$(echo "$T5_BODY" | grep -c "Backend\|html" || true)
 test_result "/api path routes to backend" "$([ "$T5_OK" -gt 0 ] && echo yes || echo no)" "yes"
 
 # Test 6: pathtest.test.dev — catch-all routes to backend-2
 echo "[T6] pathtest.test.dev — catch-all path"
 T6_BODY=$(docker exec test-client curl -sk https://pathtest.test.dev/ --resolve pathtest.test.dev:443:172.28.0.10 2>/dev/null)
-T6_OK=$(echo "$T6_BODY" | grep -c "Backend\|Secondary\|html" || echo "0")
+T6_OK=$(echo "$T6_BODY" | grep -c "Backend\|Secondary\|html" || true)
 test_result "Catch-all routes to backend" "$([ "$T6_OK" -gt 0 ] && echo yes || echo no)" "yes"
 
 # Test 7: headers.test.dev — SSO redirect includes postAuthPath
 echo "[T7] headers.test.dev — SSO redirect with postAuthPath"
 T7_LOC=$(docker exec test-client curl -sk -D- -o /dev/null https://headers.test.dev/some/page --resolve headers.test.dev:443:172.28.0.10 2>/dev/null | grep -i "^location:" || echo "")
-T7_HAS_DASHBOARD=$(echo "$T7_LOC" | grep -c "dashboard" || echo "0")
+T7_HAS_DASHBOARD=$(echo "$T7_LOC" | grep -c "dashboard" || true)
 test_result "SSO redirect uses postAuthPath=/dashboard" "$([ "$T7_HAS_DASHBOARD" -gt 0 ] && echo yes || echo no)" "yes"
 
 # Test 8: Verify Newt received the expanded config with new fields
@@ -326,7 +384,35 @@ test_result "stickySession field in config" "$([ "${T8_STICKY:-0}" -gt 0 ] && ec
 echo "[T9] Newt resource count"
 T9_LAST=$(docker logs test-newt 2>&1 | grep "Replaced resource set" | tail -1)
 T9_COUNT=$(echo "$T9_LAST" | grep -oP '\d+ resources' | grep -oP '\d+' || echo "0")
-test_result "Newt has 4 resources loaded" "$([ "$T9_COUNT" -ge 4 ] && echo yes || echo no)" "yes"
+test_result "Newt has 6 resources loaded" "$([ "$T9_COUNT" -ge 6 ] && echo yes || echo no)" "yes"
+
+# Test 10: intelligent.test.dev returns one valid DNS A answer
+echo "[T10] intelligent.test.dev — intelligent routing returns one healthy IP"
+T10_LINES=$(echo "$RESULT_INTEL" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | wc -l | tr -d ' ')
+T10_VALID=$(echo "$RESULT_INTEL" | grep -E '^(172\.28\.0\.10|172\.28\.0\.11)$' >/dev/null && echo yes || echo no)
+test_result "Intelligent routing returns a single A record" "$([ "$T10_LINES" -eq 1 ] && echo yes || echo no)" "yes"
+test_result "Intelligent routing answer is a known healthy site IP" "$T10_VALID" "yes"
+
+# Test 11: sticky DNS affinity for roundrobin policy (stickycross.test.dev)
+echo "[T11] stickycross.test.dev — sticky DNS affinity follows last established session"
+# Establish session through Newt 1, then query Newt 1 DNS from same client
+docker exec test-client curl -sk -o /dev/null https://stickycross.test.dev --resolve stickycross.test.dev:443:172.28.0.10 2>/dev/null || true
+sleep 1
+T11_DNS_N1=$(docker exec test-client sh -lc "dig @172.28.0.10 stickycross.test.dev A +short | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' | head -n1" 2>/dev/null | tr -d '\r')
+test_result "After session on Newt 1, DNS via Newt 1 returns site 1 IP" "$T11_DNS_N1" "172.28.0.10"
+
+# Establish session through Newt 2, then query Newt 2 DNS from same client
+docker exec test-client curl -sk -o /dev/null https://stickycross.test.dev --resolve stickycross.test.dev:443:172.28.0.11 2>/dev/null || true
+sleep 1
+T11_DNS_N2=$(docker exec test-client sh -lc "dig @172.28.0.11 stickycross.test.dev A +short | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' | head -n1" 2>/dev/null | tr -d '\r')
+test_result "After session on Newt 2, DNS via Newt 2 returns site 2 IP" "$T11_DNS_N2" "172.28.0.11"
+
+# Test 12: sticky DNS affinity also applies to intelligent policy
+echo "[T12] intelligent.test.dev — sticky affinity overrides intelligent selection"
+docker exec test-client curl -sk -o /dev/null https://intelligent.test.dev --resolve intelligent.test.dev:443:172.28.0.11 2>/dev/null || true
+sleep 1
+T12_DNS=$(docker exec test-client sh -lc "dig @172.28.0.11 intelligent.test.dev A +short | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' | head -n1" 2>/dev/null | tr -d '\r')
+test_result "After session on Newt 2, intelligent policy via Newt 2 returns site 2 IP" "$T12_DNS" "172.28.0.11"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
