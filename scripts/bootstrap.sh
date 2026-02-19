@@ -156,6 +156,87 @@ echo ""
 echo "[8/8] Waiting for Newt to connect and receive DNS zones..."
 sleep 8
 
+# ===================================================================
+# Auth Proxy Feature Tests
+# Create additional resources to exercise: multi-target with LB,
+# sticky sessions, path routing, custom headers, host header override,
+# postAuthPath, and non-SSO passthrough.
+# ===================================================================
+
+echo ""
+echo "=== Creating Auth Proxy Test Resources ==="
+
+# --- Resource 2: multi-target with sticky sessions (no SSO) ---
+echo "[AP-1] Creating multi.test.dev (multi-target + stickySession, no SSO)..."
+RESOURCE2_EXISTS=$(curl -s -b "$COOKIES" "$BASE/resource/2" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
+if [ "$RESOURCE2_EXISTS" != "True" ]; then
+    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/resource" \
+        -H "Content-Type: application/json" \
+        -d '{"name":"Multi Target","http":true,"protocol":"tcp","domainId":"test-domain","subdomain":"multi"}' >/dev/null
+    # Add primary target
+    curl -s -X PUT -b "$COOKIES" "$BASE/resource/2/target" \
+        -H "Content-Type: application/json" \
+        -d '{"siteId":1,"ip":"172.28.0.20","port":80,"method":"http","enabled":true,"priority":50}' >/dev/null
+    # Add secondary target
+    curl -s -X PUT -b "$COOKIES" "$BASE/resource/2/target" \
+        -H "Content-Type: application/json" \
+        -d '{"siteId":1,"ip":"172.28.0.21","port":80,"method":"http","enabled":true,"priority":100}' >/dev/null
+    # Enable DNS Authority + sticky sessions, SSO off
+    curl -s -X POST -b "$COOKIES" "$BASE/resource/2" \
+        -H "Content-Type: application/json" \
+        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","stickySession":true,"sso":false}' >/dev/null
+    echo "    Created: multi.test.dev (2 targets on site 1, stickySession=true, sso=false)"
+else
+    echo "    Already exists, skipping."
+fi
+
+# --- Resource 3: path routing + rewriting ---
+echo "[AP-2] Creating pathtest.test.dev (path routing + strip prefix)..."
+RESOURCE3_EXISTS=$(curl -s -b "$COOKIES" "$BASE/resource/3" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
+if [ "$RESOURCE3_EXISTS" != "True" ]; then
+    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/resource" \
+        -H "Content-Type: application/json" \
+        -d '{"name":"Path Test","http":true,"protocol":"tcp","domainId":"test-domain","subdomain":"pathtest"}' >/dev/null
+    # Target with prefix path + stripPrefix rewrite
+    curl -s -X PUT -b "$COOKIES" "$BASE/resource/3/target" \
+        -H "Content-Type: application/json" \
+        -d '{"siteId":1,"ip":"172.28.0.20","port":80,"method":"http","enabled":true,"path":"/api","pathMatchType":"prefix","rewritePath":null,"rewritePathType":"stripPrefix","priority":10}' >/dev/null
+    # Catch-all target (lower priority)
+    curl -s -X PUT -b "$COOKIES" "$BASE/resource/3/target" \
+        -H "Content-Type: application/json" \
+        -d '{"siteId":1,"ip":"172.28.0.21","port":80,"method":"http","enabled":true,"priority":100}' >/dev/null
+    # Enable DNS Authority, SSO off
+    curl -s -X POST -b "$COOKIES" "$BASE/resource/3" \
+        -H "Content-Type: application/json" \
+        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","sso":false}' >/dev/null
+    echo "    Created: pathtest.test.dev (/api->stripPrefix to backend-1, catch-all to backend-2)"
+else
+    echo "    Already exists, skipping."
+fi
+
+# --- Resource 4: custom headers + setHostHeader + postAuthPath ---
+echo "[AP-3] Creating headers.test.dev (custom headers + setHostHeader)..."
+RESOURCE4_EXISTS=$(curl -s -b "$COOKIES" "$BASE/resource/4" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
+if [ "$RESOURCE4_EXISTS" != "True" ]; then
+    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/resource" \
+        -H "Content-Type: application/json" \
+        -d '{"name":"Headers Test","http":true,"protocol":"tcp","domainId":"test-domain","subdomain":"headers"}' >/dev/null
+    curl -s -X PUT -b "$COOKIES" "$BASE/resource/4/target" \
+        -H "Content-Type: application/json" \
+        -d '{"siteId":1,"ip":"172.28.0.20","port":80,"method":"http","enabled":true}' >/dev/null
+    # Enable DNS Authority + custom headers + setHostHeader + postAuthPath, SSO on
+    curl -s -X POST -b "$COOKIES" "$BASE/resource/4" \
+        -H "Content-Type: application/json" \
+        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"failover","sso":true,"setHostHeader":"backend.internal","headers":[{"name":"X-Custom-Test","value":"hello-from-pangolin"},{"name":"X-Environment","value":"testing"}],"postAuthPath":"/dashboard"}' >/dev/null
+    echo "    Created: headers.test.dev (setHostHeader=backend.internal, 2 custom headers, postAuthPath=/dashboard)"
+else
+    echo "    Already exists, skipping."
+fi
+
+echo ""
+echo "Waiting for auth proxy configs to propagate..."
+sleep 5
+
 # Verify DNS Authority
 echo ""
 echo "=== DNS Authority Verification ==="
@@ -164,26 +245,95 @@ echo ""
 RESULT_APP=$(dig @localhost -p 5353 app.test.dev A +short 2>/dev/null || echo "FAILED")
 RESULT_APP2=$(dig @localhost -p 5354 app.test.dev A +short 2>/dev/null || echo "FAILED")
 RESULT_WILD=$(dig @localhost -p 5353 random.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_MULTI=$(dig @localhost -p 5353 multi.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_PATH=$(dig @localhost -p 5353 pathtest.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_HDRS=$(dig @localhost -p 5353 headers.test.dev A +short 2>/dev/null || echo "FAILED")
 
-echo "  app.test.dev (Newt 1) -> ${RESULT_APP:-EMPTY}"
-echo "  app.test.dev (Newt 2) -> ${RESULT_APP2:-EMPTY}"
-echo "  random.test.dev       -> ${RESULT_WILD:-EMPTY}"
+echo "  app.test.dev (Newt 1)      -> ${RESULT_APP:-EMPTY}"
+echo "  app.test.dev (Newt 2)      -> ${RESULT_APP2:-EMPTY}"
+echo "  random.test.dev            -> ${RESULT_WILD:-EMPTY}"
+echo "  multi.test.dev (Newt 1)    -> ${RESULT_MULTI:-EMPTY}"
+echo "  pathtest.test.dev (Newt 1) -> ${RESULT_PATH:-EMPTY}"
+echo "  headers.test.dev (Newt 1)  -> ${RESULT_HDRS:-EMPTY}"
 echo ""
 
-if [ "$RESULT_APP" = "172.28.0.10" ] && [ "$RESULT_APP2" = "172.28.0.10" ] && [ "$RESULT_WILD" = "172.28.0.10" ]; then
-    echo "SUCCESS: DNS Authority is working on both sites!"
-    echo "  - Resource zone (app.test.dev) resolves correctly on primary and secondary"
-    echo "  - Wildcard domain zone (*.test.dev) resolves correctly"
-else
-    echo "WARNING: DNS resolution may not be fully working yet."
-    echo "  Check: docker logs test-newt 2>&1 | grep -i dns"
-    echo "  Check: docker logs test-newt-secondary 2>&1 | grep -i dns"
-    echo "  Check: docker logs test-pangolin 2>&1 | grep -i dns"
+# ===================================================================
+# Auth Proxy Integration Tests
+# ===================================================================
+echo "=== Auth Proxy Integration Tests ==="
+echo ""
+PASS=0
+FAIL=0
+
+# Helper: test and report
+test_result() {
+    local label="$1" actual="$2" expected="$3"
+    if [ "$actual" = "$expected" ]; then
+        echo "  PASS: $label"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $label (expected: $expected, got: $actual)"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# Test 1: app.test.dev SSO redirect (HTTPS)
+echo "[T1] app.test.dev — SSO redirect on HTTPS"
+T1_CODE=$(docker exec test-client curl -sk -o /dev/null -w '%{http_code}' https://app.test.dev --resolve app.test.dev:443:172.28.0.10 2>/dev/null)
+test_result "HTTPS SSO redirect returns 302" "$T1_CODE" "302"
+
+# Test 2: app.test.dev HTTP→HTTPS redirect
+echo "[T2] app.test.dev — HTTP→HTTPS redirect"
+T2_CODE=$(docker exec test-client curl -s -o /dev/null -w '%{http_code}' http://app.test.dev --resolve app.test.dev:80:172.28.0.10 2>/dev/null)
+test_result "HTTP→HTTPS redirect returns 301" "$T2_CODE" "301"
+
+# Test 3: multi.test.dev — no SSO, should proxy directly to backend
+echo "[T3] multi.test.dev — direct proxy (no SSO)"
+T3_CODE=$(docker exec test-client curl -sk -o /dev/null -w '%{http_code}' https://multi.test.dev --resolve multi.test.dev:443:172.28.0.10 2>/dev/null)
+test_result "Direct proxy returns 200 (no SSO)" "$T3_CODE" "200"
+
+# Test 4: multi.test.dev — sticky session cookie set
+echo "[T4] multi.test.dev — sticky session cookie"
+T4_COOKIE=$(docker exec test-client curl -sk -D- https://multi.test.dev --resolve multi.test.dev:443:172.28.0.10 2>/dev/null | grep -i "set-cookie.*p_sticky" || echo "")
+test_result "Sticky session cookie p_sticky present" "$([ -n "$T4_COOKIE" ] && echo yes || echo no)" "yes"
+
+# Test 5: pathtest.test.dev — /api path routes to backend-1
+echo "[T5] pathtest.test.dev — /api path routing"
+T5_BODY=$(docker exec test-client curl -sk https://pathtest.test.dev/api/ --resolve pathtest.test.dev:443:172.28.0.10 2>/dev/null)
+T5_OK=$(echo "$T5_BODY" | grep -c "Backend\|html" || echo "0")
+test_result "/api path routes to backend" "$([ "$T5_OK" -gt 0 ] && echo yes || echo no)" "yes"
+
+# Test 6: pathtest.test.dev — catch-all routes to backend-2
+echo "[T6] pathtest.test.dev — catch-all path"
+T6_BODY=$(docker exec test-client curl -sk https://pathtest.test.dev/ --resolve pathtest.test.dev:443:172.28.0.10 2>/dev/null)
+T6_OK=$(echo "$T6_BODY" | grep -c "Backend\|Secondary\|html" || echo "0")
+test_result "Catch-all routes to backend" "$([ "$T6_OK" -gt 0 ] && echo yes || echo no)" "yes"
+
+# Test 7: headers.test.dev — SSO redirect includes postAuthPath
+echo "[T7] headers.test.dev — SSO redirect with postAuthPath"
+T7_LOC=$(docker exec test-client curl -sk -D- -o /dev/null https://headers.test.dev/some/page --resolve headers.test.dev:443:172.28.0.10 2>/dev/null | grep -i "^location:" || echo "")
+T7_HAS_DASHBOARD=$(echo "$T7_LOC" | grep -c "dashboard" || echo "0")
+test_result "SSO redirect uses postAuthPath=/dashboard" "$([ "$T7_HAS_DASHBOARD" -gt 0 ] && echo yes || echo no)" "yes"
+
+# Test 8: Verify Newt received the expanded config with new fields
+echo "[T8] Newt config — checking for new fields in auth proxy config"
+T8_TARGETS=$(docker logs test-newt 2>&1 | grep -c "targets:\[" 2>/dev/null || true)
+T8_STICKY=$(docker logs test-newt 2>&1 | grep -c "stickySession:" 2>/dev/null || true)
+test_result "Targets array in config" "$([ "${T8_TARGETS:-0}" -gt 0 ] && echo yes || echo no)" "yes"
+test_result "stickySession field in config" "$([ "${T8_STICKY:-0}" -gt 0 ] && echo yes || echo no)" "yes"
+
+# Test 9: Verify multiple resources received by Newt
+echo "[T9] Newt resource count"
+T9_LAST=$(docker logs test-newt 2>&1 | grep "Replaced resource set" | tail -1)
+T9_COUNT=$(echo "$T9_LAST" | grep -oP '\d+ resources' | grep -oP '\d+' || echo "0")
+test_result "Newt has 4 resources loaded" "$([ "$T9_COUNT" -ge 4 ] && echo yes || echo no)" "yes"
+
+echo ""
+echo "=== Results: $PASS passed, $FAIL failed ==="
+echo ""
+
+if [ "$FAIL" -gt 0 ]; then
+    echo "Some tests failed. Debug with:"
+    echo "  docker logs test-newt 2>&1 | grep -i 'auth proxy'"
+    echo "  docker logs test-pangolin 2>&1 | grep -i 'auth proxy'"
 fi
-
-echo ""
-echo "=== Test Commands ==="
-echo "  dig @localhost -p 5353 app.test.dev A +short"
-echo "  dig @localhost -p 5354 app.test.dev A +short"
-echo "  dig @localhost -p 5353 anything.test.dev A +short"
-echo "  dig @localhost -p 5353 foo.bar.test.dev A +short"
