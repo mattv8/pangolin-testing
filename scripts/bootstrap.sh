@@ -156,6 +156,30 @@ echo ""
 echo "[8/8] Waiting for Newt to connect and receive DNS zones..."
 sleep 8
 
+echo "    Waiting for DNS Authority listeners (Newt 1:5353, Newt 2:5354)..."
+wait_for_dns_listener() {
+    local port="$1"
+    local name="$2"
+    local ok="false"
+
+    for _ in $(seq 1 30); do
+        if dig @localhost -p "$port" app.test.dev A +short +time=1 +tries=1 2>/dev/null | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            ok="true"
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$ok" = "true" ]; then
+        echo "    $name DNS is ready"
+    else
+        echo "    WARN: $name DNS did not answer within timeout; continuing tests"
+    fi
+}
+
+wait_for_dns_listener 5353 "Newt 1"
+wait_for_dns_listener 5354 "Newt 2"
+
 # ===================================================================
 # Auth Proxy Feature Tests
 # Create additional resources to exercise: multi-target with LB,
