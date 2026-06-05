@@ -40,6 +40,13 @@ build() {
     success "Build complete"
 }
 
+# Bootstrap test data into Pangolin
+bootstrap() {
+    log "Bootstrapping test data..."
+    bash "$SCRIPT_DIR/scripts/bootstrap.sh"
+    success "Bootstrap complete"
+}
+
 # Start services
 start() {
     log "Starting test stack..."
@@ -61,6 +68,7 @@ start() {
     done
 
     docker compose ps
+    bootstrap
     success "Test stack started"
 }
 
@@ -92,6 +100,7 @@ logs() {
 # Run tests
 test() {
     log "Running tests in test-client container..."
+    bootstrap
     docker compose exec test-client bash /scripts/run-tests.sh
 }
 
@@ -154,6 +163,7 @@ usage() {
     echo ""
     echo "Commands:"
     echo "  build       Build all Docker images"
+    echo "  bootstrap   Seed Pangolin test data"
     echo "  start       Start the test stack"
     echo "  stop        Stop the test stack"
     echo "  restart     Restart the test stack"
@@ -174,6 +184,9 @@ usage() {
 case "${1:-help}" in
     build)
         build
+        ;;
+    bootstrap)
+        bootstrap
         ;;
     start)
         start

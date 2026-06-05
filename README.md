@@ -194,6 +194,10 @@ docker compose ps                        # all services should be healthy
 
 # Bootstrap test data (creates admin, org, sites, resource, targets)
 bash scripts/bootstrap.sh
+
+# Or use the test harness, which bootstraps automatically on start/test
+./test-stack.sh start
+./test-stack.sh test
 ```
 
 | Service | IP | Host Port | Access |
@@ -204,7 +208,7 @@ bash scripts/bootstrap.sh
 | Gerbil (exit node) | 172.28.0.5 | 51820/udp | WireGuard tunnel endpoint |
 | Newt 1 DNS | 172.28.0.10 | 5353 | `dig @localhost -p 5353 app.test.dev A` |
 | Newt 2 DNS | 172.28.0.11 | 5354 | `dig @localhost -p 5354 app.test.dev A` |
-| Newt 1 Auth Proxy | 172.28.0.10 | 8080/8443 | http://localhost:8080 |
+| Newt 1 Auth Proxy | 172.28.0.10 | 18080/18443 | http://localhost:18080 |
 | Newt 2 Auth Proxy | 172.28.0.11 | 8089/8449 | http://localhost:8089 |
 | Backend 1 | 172.28.0.20 | — | Internal only |
 | Backend 2 | 172.28.0.21 | — | Internal only |
@@ -229,7 +233,7 @@ dig @localhost -p 5354 app.test.dev A +short      # → 172.28.0.10
 dig @localhost -p 5353 anything.test.dev A +short  # → 172.28.0.10 (wildcard)
 
 # Auth Proxy
-curl -sI http://localhost:8080/ | grep Location   # → 302 redirect
+curl -sI http://localhost:18080/ | grep Location   # → 302 redirect
 
 # Failover
 docker compose stop backend

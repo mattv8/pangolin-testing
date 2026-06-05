@@ -111,8 +111,8 @@ services:
     ports:
       - "5353:53/udp"     # DNS Authority (use 5353 to avoid conflict with local resolver)
       - "5353:53/tcp"     # DNS Authority (TCP)
-      - "8080:80"       # Auth Proxy HTTP (container :80 → host :8080)
-      - "8443:443"      # Auth Proxy HTTPS (container :443 → host :8443)
+      - "18080:80"      # Auth Proxy HTTP (container :80 → host :18080)
+      - "18443:443"     # Auth Proxy HTTPS (container :443 → host :18443)
     environment:
       - PANGOLIN_ENDPOINT=http://pangolin:3002
       - NEWT_ID=test-newt-001
