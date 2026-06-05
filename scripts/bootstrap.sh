@@ -1,333 +1,354 @@
 #!/usr/bin/env bash
-# Bootstrap script for Pangolin DNS Authority test stack
-# This creates the initial admin, org, site, domain, resource, and target
-# so that Newt can connect and DNS Authority can be tested.
+# Bootstrap script for Pangolin DNS Authority test stack.
+# Creates the admin, org, domain, Newt sites, resources, and targets needed by
+# the local DNS Authority and Auth Proxy end-to-end tests.
 
 set -euo pipefail
 
 BASE="http://localhost:3001/api/v1"
 COOKIES="/tmp/pangolin-cookies.txt"
+ORG_ID="test-org"
+DOMAIN="test.dev"
+ADMIN_EMAIL="admin@test.dev"
+ADMIN_PASSWORD="TestAdmin123!"
+NEWT_SECRET="test-secret-for-local-development-only"
 
 echo "=== Pangolin DNS Authority Test Bootstrap ==="
 echo ""
 
-# Step 1: Wait for Pangolin to be ready
+json_get() {
+    local path="$1"
+    python3 -c '
+import json, sys
+path = sys.argv[1].split(".") if sys.argv[1] else []
+value = json.load(sys.stdin)
+for part in path:
+    if isinstance(value, list):
+        value = value[int(part)]
+    else:
+        value = value.get(part)
+    if value is None:
+        print("")
+        sys.exit(0)
+if isinstance(value, bool):
+    print("True" if value else "False")
+else:
+    print(value)
+' "$path"
+}
+
+json_find() {
+    local collection_path="$1"
+    local key="$2"
+    local value="$3"
+    local return_key="$4"
+    python3 -c '
+import json, sys
+collection_path, key, expected, return_key = sys.argv[1:]
+data = json.load(sys.stdin)
+items = data
+for part in collection_path.split("."):
+    items = items.get(part, {}) if isinstance(items, dict) else {}
+for item in items if isinstance(items, list) else []:
+    if str(item.get(key, "")) == expected:
+        print(item.get(return_key, ""))
+        sys.exit(0)
+print("")
+' "$collection_path" "$key" "$value" "$return_key"
+}
+
+api() {
+    local method="$1"
+    local path="$2"
+    local data="${3:-}"
+    local tmp code body success
+    tmp=$(mktemp)
+
+    if [ -n "$data" ]; then
+        code=$(curl -sS -w '%{http_code}' -o "$tmp" -X "$method" \
+            -b "$COOKIES" -c "$COOKIES" \
+            -H "Content-Type: application/json" \
+            -d "$data" \
+            "$BASE$path")
+    else
+        code=$(curl -sS -w '%{http_code}' -o "$tmp" -X "$method" \
+            -b "$COOKIES" -c "$COOKIES" \
+            "$BASE$path")
+    fi
+
+    body=$(cat "$tmp")
+    rm -f "$tmp"
+
+    if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+        echo "ERROR: $method $path returned HTTP $code" >&2
+        echo "$body" >&2
+        exit 1
+    fi
+
+    if [ -n "$body" ]; then
+        success=$(printf '%s' "$body" | json_get success 2>/dev/null || echo "")
+        if [ "$success" = "False" ]; then
+            echo "ERROR: $method $path returned an API error" >&2
+            echo "$body" >&2
+            exit 1
+        fi
+    fi
+
+    printf '%s' "$body"
+}
+
+login() {
+    local tmp code body
+    tmp=$(mktemp)
+    code=$(curl -sS -w '%{http_code}' -o "$tmp" -X POST "$BASE/auth/login" \
+        -H "Content-Type: application/json" \
+        -c "$COOKIES" \
+        -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}")
+    body=$(cat "$tmp")
+    rm -f "$tmp"
+
+    if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+        echo "ERROR: login returned HTTP $code" >&2
+        echo "$body" >&2
+        exit 1
+    fi
+}
+
+find_site_id_by_name() {
+    api GET "/org/$ORG_ID/sites" | json_find data.sites name "$1" siteId
+}
+
+find_domain_id() {
+    api GET "/org/$ORG_ID/domains" | json_find data.domains baseDomain "$DOMAIN" domainId
+}
+
+find_resource_id_by_domain() {
+    api GET "/org/$ORG_ID/resources" | json_find data.resources fullDomain "$1" resourceId
+}
+
+target_exists() {
+    local resource_id="$1"
+    local site_id="$2"
+    local ip="$3"
+    local port="$4"
+    api GET "/resource/$resource_id/targets" | python3 -c '
+import json, sys
+site_id, ip, port = sys.argv[1], sys.argv[2], sys.argv[3]
+data = json.load(sys.stdin)
+for target in data.get("data", {}).get("targets", []):
+    if str(target.get("siteId")) == site_id and target.get("ip") == ip and str(target.get("port")) == port:
+        print("yes")
+        sys.exit(0)
+print("no")
+' "$site_id" "$ip" "$port"
+}
+
+ensure_site() {
+    local name="$1"
+    local newt_id="$2"
+    local public_ip="$3"
+    local site_id site_json existing_newt_id response payload
+
+    site_id=$(find_site_id_by_name "$name")
+    if [ -n "$site_id" ]; then
+        site_json=$(api GET "/site/$site_id")
+        existing_newt_id=$(printf '%s' "$site_json" | json_get data.newtId)
+        if [ "$existing_newt_id" != "$newt_id" ]; then
+            echo "ERROR: Site '$name' has Newt ID '$existing_newt_id', expected '$newt_id'" >&2
+            exit 1
+        fi
+        echo "    Site '$name' already exists with ID $site_id."
+    else
+        payload=$(printf '{"name":"%s","type":"newt","newtId":"%s","secret":"%s"}' "$name" "$newt_id" "$NEWT_SECRET")
+        response=$(api PUT "/org/$ORG_ID/site" "$payload")
+        site_id=$(printf '%s' "$response" | json_get data.siteId)
+        echo "    Site created: $name (siteId=$site_id, newtId=$newt_id)"
+    fi
+
+    api POST "/site/$site_id" "{\"dnsAuthorityEnabled\":true,\"publicIp\":\"$public_ip\"}" >/dev/null
+    echo "    DNS Authority enabled on siteId $site_id, publicIp: $public_ip"
+    printf '%s\n' "$site_id"
+}
+
+ensure_resource() {
+    local name="$1"
+    local subdomain="$2"
+    local update_json="$3"
+    local domain_id="$4"
+    local full_domain resource_id response payload
+
+    full_domain="$subdomain.$DOMAIN"
+    resource_id=$(find_resource_id_by_domain "$full_domain")
+    if [ -n "$resource_id" ]; then
+        echo "    Resource '$full_domain' already exists with ID $resource_id."
+    else
+        payload=$(printf '{"name":"%s","http":true,"protocol":"tcp","domainId":"%s","subdomain":"%s"}' "$name" "$domain_id" "$subdomain")
+        response=$(api PUT "/org/$ORG_ID/resource" "$payload")
+        resource_id=$(printf '%s' "$response" | json_get data.resourceId)
+        echo "    Resource created: $full_domain (resourceId=$resource_id)"
+    fi
+
+    api POST "/resource/$resource_id" "$update_json" >/dev/null
+    printf '%s\n' "$resource_id"
+}
+
+ensure_target() {
+    local resource_id="$1"
+    local site_id="$2"
+    local ip="$3"
+    local port="$4"
+    local extra_fields="${5:-}"
+    local payload
+
+    if [ "$(target_exists "$resource_id" "$site_id" "$ip" "$port")" = "yes" ]; then
+        echo "    Target already exists: resourceId=$resource_id siteId=$site_id $ip:$port"
+        return
+    fi
+
+    payload=$(printf '{"siteId":%s,"ip":"%s","port":%s,"method":"http","enabled":true%s}' "$site_id" "$ip" "$port" "$extra_fields")
+    api PUT "/resource/$resource_id/target" "$payload" >/dev/null
+    echo "    Target added: resourceId=$resource_id siteId=$site_id $ip:$port"
+}
+
+wait_for_dns_listener() {
+    local dns_server="$1"
+    local name="$2"
+
+    for _ in $(seq 1 45); do
+        if docker compose exec -T test-client dig @"$dns_server" app.test.dev A +short +time=1 +tries=1 2>/dev/null | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "    $name DNS is ready"
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "ERROR: $name DNS did not answer within timeout" >&2
+    return 1
+}
+
 echo "[1/8] Waiting for Pangolin API..."
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
     if curl -s "$BASE/auth/initial-setup-complete" >/dev/null 2>&1; then
         break
     fi
     sleep 2
 done
 
-# Step 2: Check if setup is already complete
-SETUP_COMPLETE=$(curl -s "$BASE/auth/initial-setup-complete" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['complete'])" 2>/dev/null || echo "error")
+SETUP_COMPLETE=$(curl -s "$BASE/auth/initial-setup-complete" | json_get data.complete 2>/dev/null || echo "error")
 if [ "$SETUP_COMPLETE" = "True" ]; then
     echo "    Setup already complete. Logging in..."
-    curl -s -X POST "$BASE/auth/login" \
-        -H "Content-Type: application/json" \
-        -c "$COOKIES" \
-        -d '{"email":"admin@test.dev","password":"TestAdmin123!"}' >/dev/null
+    login
     echo "    Logged in."
 else
-    # Step 3: Get setup token from Pangolin logs
     echo "[2/8] Getting setup token from Pangolin logs..."
     SETUP_TOKEN=$(docker logs test-pangolin 2>&1 | grep "^Token:" | tail -1 | awk '{print $2}')
     if [ -z "$SETUP_TOKEN" ]; then
-        echo "ERROR: Could not find setup token in Pangolin logs"
-        echo "Check: docker logs test-pangolin 2>&1 | grep Token"
+        echo "ERROR: Could not find setup token in Pangolin logs" >&2
+        echo "Check: docker logs test-pangolin 2>&1 | grep Token" >&2
         exit 1
     fi
     echo "    Token: $SETUP_TOKEN"
 
-    # Step 4: Create server admin
     echo "[3/8] Creating server admin..."
-    curl -s -X PUT "$BASE/auth/set-server-admin" \
+    tmp=$(mktemp)
+    code=$(curl -sS -w '%{http_code}' -o "$tmp" -X PUT "$BASE/auth/set-server-admin" \
         -H "Content-Type: application/json" \
-        -d "{\"email\":\"admin@test.dev\",\"password\":\"TestAdmin123!\",\"setupToken\":\"$SETUP_TOKEN\"}" >/dev/null
-    echo "    Admin created: admin@test.dev"
+        -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\",\"setupToken\":\"$SETUP_TOKEN\"}")
+    body=$(cat "$tmp")
+    rm -f "$tmp"
+    if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+        echo "ERROR: set-server-admin returned HTTP $code" >&2
+        echo "$body" >&2
+        exit 1
+    fi
+    echo "    Admin created: $ADMIN_EMAIL"
 
-    # Step 5: Login
     echo "[4/8] Logging in..."
-    curl -s -X POST "$BASE/auth/login" \
-        -H "Content-Type: application/json" \
-        -c "$COOKIES" \
-        -d '{"email":"admin@test.dev","password":"TestAdmin123!"}' >/dev/null
+    login
     echo "    Logged in."
 fi
 
-# Step 6: Create org (skip if exists)
 echo "[5/8] Creating organization..."
-ORG_EXISTS=$(curl -s -b "$COOKIES" "$BASE/org/test-org" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
+ORG_EXISTS=$(curl -s -b "$COOKIES" "$BASE/org/$ORG_ID" | json_get success 2>/dev/null || echo "False")
 if [ "$ORG_EXISTS" = "True" ]; then
-    echo "    Org 'test-org' already exists, skipping."
+    echo "    Org '$ORG_ID' already exists, skipping."
 else
-    DEFAULTS=$(curl -s -b "$COOKIES" "$BASE/pick-org-defaults")
-    SUBNET=$(echo "$DEFAULTS" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['subnet'])")
-    UTIL_SUBNET=$(echo "$DEFAULTS" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['utilitySubnet'])")
-    curl -s -X PUT -b "$COOKIES" "$BASE/org" \
-        -H "Content-Type: application/json" \
-        -d "{\"orgId\":\"test-org\",\"name\":\"Test Organization\",\"subnet\":\"$SUBNET\",\"utilitySubnet\":\"$UTIL_SUBNET\"}" >/dev/null
-    echo "    Org created: test-org"
+    DEFAULTS=$(api GET "/pick-org-defaults")
+    SUBNET=$(printf '%s' "$DEFAULTS" | json_get data.subnet)
+    UTIL_SUBNET=$(printf '%s' "$DEFAULTS" | json_get data.utilitySubnet)
+    api PUT "/org" "{\"orgId\":\"$ORG_ID\",\"name\":\"Test Organization\",\"subnet\":\"$SUBNET\",\"utilitySubnet\":\"$UTIL_SUBNET\"}" >/dev/null
+    echo "    Org created: $ORG_ID"
 fi
 
-# Step 7: Create site (skip if exists)
-echo "[6/8] Creating site with Newt credentials..."
-SITE_EXISTS=$(curl -s -b "$COOKIES" "$BASE/site/1" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
-if [ "$SITE_EXISTS" = "True" ]; then
-    echo "    Site already exists, updating DNS Authority settings..."
-    curl -s -X POST -b "$COOKIES" "$BASE/site/1" \
-        -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"publicIp":"172.28.0.10"}' >/dev/null
+echo "[6/8] Ensuring domain and Newt sites..."
+DOMAIN_ID=$(find_domain_id)
+if [ -z "$DOMAIN_ID" ]; then
+    DOMAIN_RESPONSE=$(api PUT "/org/$ORG_ID/domain" "{\"type\":\"wildcard\",\"baseDomain\":\"$DOMAIN\"}")
+    DOMAIN_ID=$(printf '%s' "$DOMAIN_RESPONSE" | json_get data.domainId)
+    echo "    Domain created: $DOMAIN (domainId=$DOMAIN_ID)"
 else
-    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/site" \
-        -H "Content-Type: application/json" \
-        -d '{"name":"Test Site","type":"newt","newtId":"test-newt-001","secret":"test-secret-for-local-development-only"}' >/dev/null
-    echo "    Site created with Newt ID: test-newt-001"
-
-    # Enable DNS Authority and set publicIp
-    curl -s -X POST -b "$COOKIES" "$BASE/site/1" \
-        -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"publicIp":"172.28.0.10"}' >/dev/null
-    echo "    DNS Authority enabled, publicIp: 172.28.0.10"
+    echo "    Domain '$DOMAIN' already exists with ID $DOMAIN_ID."
 fi
 
-# Step 7b: Create secondary site (skip if exists)
-echo "[6/8b] Creating secondary site (Newt 2)..."
-SITE2_EXISTS=$(curl -s -b "$COOKIES" "$BASE/site/2" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
-if [ "$SITE2_EXISTS" = "True" ]; then
-    echo "    Secondary site already exists, updating DNS Authority settings..."
-    curl -s -X POST -b "$COOKIES" "$BASE/site/2" \
-        -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"publicIp":"172.28.0.11"}' >/dev/null
-else
-    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/site" \
-        -H "Content-Type: application/json" \
-        -d '{"name":"Test Site Secondary","type":"newt","newtId":"test-newt-002","secret":"test-secret-for-local-development-only"}' >/dev/null
-    echo "    Secondary site created with Newt ID: test-newt-002"
+SITE1_ID=$(ensure_site "Test Site" "test-newt-001" "172.28.0.10" | tail -n1)
+SITE2_ID=$(ensure_site "Test Site Secondary" "test-newt-002" "172.28.0.11" | tail -n1)
 
-    # Enable DNS Authority and set publicIp
-    curl -s -X POST -b "$COOKIES" "$BASE/site/2" \
-        -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"publicIp":"172.28.0.11"}' >/dev/null
-    echo "    DNS Authority enabled on secondary site, publicIp: 172.28.0.11"
-fi
-
-# Step 8: Create resource (skip if exists)
-echo "[7/8] Creating resource app.test.dev..."
-RESOURCE_EXISTS=$(curl -s -b "$COOKIES" "$BASE/resource/1" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
-if [ "$RESOURCE_EXISTS" = "True" ]; then
-    echo "    Resource already exists, ensuring DNS Authority enabled..."
-    curl -s -X POST -b "$COOKIES" "$BASE/resource/1" \
-        -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin"}' >/dev/null
-
-    # Try adding secondary target if it might be missing
-    echo "    Ensuring secondary target exists..."
-    curl -s -X PUT -b "$COOKIES" "$BASE/resource/1/target" \
-        -H "Content-Type: application/json" \
-        -d '{"siteId":2,"ip":"172.28.0.21","port":80,"method":"http","enabled":true}' >/dev/null || true
-else
-    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/resource" \
-        -H "Content-Type: application/json" \
-        -d '{"name":"App","http":true,"protocol":"tcp","domainId":"test-domain","subdomain":"app"}' >/dev/null
-    echo "    Resource created: app.test.dev"
-
-    # Add target
-    curl -s -X PUT -b "$COOKIES" "$BASE/resource/1/target" \
-        -H "Content-Type: application/json" \
-        -d '{"siteId":1,"ip":"172.28.0.20","port":80,"method":"http","enabled":true}' >/dev/null
-    echo "    Target added: 172.28.0.20:80 (backend)"
-
-    # Add secondary target
-    curl -s -X PUT -b "$COOKIES" "$BASE/resource/1/target" \
-        -H "Content-Type: application/json" \
-        -d '{"siteId":2,"ip":"172.28.0.21","port":80,"method":"http","enabled":true}' >/dev/null
-    echo "    Target added: 172.28.0.21:80 (secondary backend)"
-
-    # Enable DNS Authority
-    curl -s -X POST -b "$COOKIES" "$BASE/resource/1" \
-        -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin"}' >/dev/null
-    echo "    DNS Authority enabled on resource"
-fi
+echo "[7/8] Creating DNS Authority resources and targets..."
+RESOURCE1_ID=$(ensure_resource "App" "app" '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin"}' "$DOMAIN_ID" | tail -n1)
+ensure_target "$RESOURCE1_ID" "$SITE1_ID" "172.28.0.20" 80
+ensure_target "$RESOURCE1_ID" "$SITE2_ID" "172.28.0.21" 80
 
 echo ""
 echo "[8/8] Waiting for Newt to connect and receive DNS zones..."
 sleep 8
-
-echo "    Waiting for DNS Authority listeners (Newt 1:5353, Newt 2:5354)..."
-wait_for_dns_listener() {
-    local port="$1"
-    local name="$2"
-    local ok="false"
-
-    for _ in $(seq 1 30); do
-        if dig @localhost -p "$port" app.test.dev A +short +time=1 +tries=1 2>/dev/null | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-            ok="true"
-            break
-        fi
-        sleep 1
-    done
-
-    if [ "$ok" = "true" ]; then
-        echo "    $name DNS is ready"
-    else
-        echo "    WARN: $name DNS did not answer within timeout; continuing tests"
-    fi
-}
-
-wait_for_dns_listener 5353 "Newt 1"
-wait_for_dns_listener 5354 "Newt 2"
-
-# ===================================================================
-# Auth Proxy Feature Tests
-# Create additional resources to exercise: multi-target with LB,
-# sticky sessions, path routing, custom headers, host header override,
-# postAuthPath, and non-SSO passthrough.
-# ===================================================================
+echo "    Waiting for DNS Authority listeners (Newt 1:172.28.0.10, Newt 2:172.28.0.11)..."
+wait_for_dns_listener 172.28.0.10 "Newt 1"
+wait_for_dns_listener 172.28.0.11 "Newt 2"
 
 echo ""
 echo "=== Creating Auth Proxy Test Resources ==="
 
-# --- Resource 2: multi-target with sticky sessions (no SSO) ---
 echo "[AP-1] Creating multi.test.dev (multi-target + stickySession, no SSO)..."
-RESOURCE2_EXISTS=$(curl -s -b "$COOKIES" "$BASE/resource/2" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
-if [ "$RESOURCE2_EXISTS" != "True" ]; then
-    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/resource" \
-        -H "Content-Type: application/json" \
-        -d '{"name":"Multi Target","http":true,"protocol":"tcp","domainId":"test-domain","subdomain":"multi"}' >/dev/null
-    # Add primary target
-    curl -s -X PUT -b "$COOKIES" "$BASE/resource/2/target" \
-        -H "Content-Type: application/json" \
-        -d '{"siteId":1,"ip":"172.28.0.20","port":80,"method":"http","enabled":true,"priority":50}' >/dev/null
-    # Add secondary target
-    curl -s -X PUT -b "$COOKIES" "$BASE/resource/2/target" \
-        -H "Content-Type: application/json" \
-        -d '{"siteId":1,"ip":"172.28.0.21","port":80,"method":"http","enabled":true,"priority":100}' >/dev/null
-    # Enable DNS Authority + sticky sessions, SSO off
-    curl -s -X POST -b "$COOKIES" "$BASE/resource/2" \
-        -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","stickySession":true,"sso":false}' >/dev/null
-    echo "    Created: multi.test.dev (2 targets on site 1, stickySession=true, sso=false)"
-else
-    echo "    Already exists, skipping."
-fi
+RESOURCE2_ID=$(ensure_resource "Multi Target" "multi" '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","stickySession":true,"sso":false}' "$DOMAIN_ID" | tail -n1)
+ensure_target "$RESOURCE2_ID" "$SITE1_ID" "172.28.0.20" 80 ',"priority":50'
+ensure_target "$RESOURCE2_ID" "$SITE1_ID" "172.28.0.21" 80 ',"priority":100'
 
-# --- Resource 3: path routing + rewriting ---
 echo "[AP-2] Creating pathtest.test.dev (path routing + strip prefix)..."
-RESOURCE3_EXISTS=$(curl -s -b "$COOKIES" "$BASE/resource/3" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
-if [ "$RESOURCE3_EXISTS" != "True" ]; then
-    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/resource" \
-        -H "Content-Type: application/json" \
-        -d '{"name":"Path Test","http":true,"protocol":"tcp","domainId":"test-domain","subdomain":"pathtest"}' >/dev/null
-    # Target with prefix path + stripPrefix rewrite
-    curl -s -X PUT -b "$COOKIES" "$BASE/resource/3/target" \
-        -H "Content-Type: application/json" \
-        -d '{"siteId":1,"ip":"172.28.0.20","port":80,"method":"http","enabled":true,"path":"/api","pathMatchType":"prefix","rewritePath":null,"rewritePathType":"stripPrefix","priority":10}' >/dev/null
-    # Catch-all target (lower priority)
-    curl -s -X PUT -b "$COOKIES" "$BASE/resource/3/target" \
-        -H "Content-Type: application/json" \
-        -d '{"siteId":1,"ip":"172.28.0.21","port":80,"method":"http","enabled":true,"priority":100}' >/dev/null
-    # Enable DNS Authority, SSO off
-    curl -s -X POST -b "$COOKIES" "$BASE/resource/3" \
-        -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","sso":false}' >/dev/null
-    echo "    Created: pathtest.test.dev (/api->stripPrefix to backend-1, catch-all to backend-2)"
-else
-    echo "    Already exists, skipping."
-fi
+RESOURCE3_ID=$(ensure_resource "Path Test" "pathtest" '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","sso":false}' "$DOMAIN_ID" | tail -n1)
+ensure_target "$RESOURCE3_ID" "$SITE1_ID" "172.28.0.20" 80 ',"path":"/api","pathMatchType":"prefix","rewritePath":null,"rewritePathType":"stripPrefix","priority":10'
+ensure_target "$RESOURCE3_ID" "$SITE1_ID" "172.28.0.21" 80 ',"priority":100'
 
-# --- Resource 4: custom headers + setHostHeader + postAuthPath ---
 echo "[AP-3] Creating headers.test.dev (custom headers + setHostHeader)..."
-RESOURCE4_EXISTS=$(curl -s -b "$COOKIES" "$BASE/resource/4" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
-if [ "$RESOURCE4_EXISTS" != "True" ]; then
-    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/resource" \
-        -H "Content-Type: application/json" \
-        -d '{"name":"Headers Test","http":true,"protocol":"tcp","domainId":"test-domain","subdomain":"headers"}' >/dev/null
-    curl -s -X PUT -b "$COOKIES" "$BASE/resource/4/target" \
-        -H "Content-Type: application/json" \
-        -d '{"siteId":1,"ip":"172.28.0.20","port":80,"method":"http","enabled":true}' >/dev/null
-    # Enable DNS Authority + custom headers + setHostHeader + postAuthPath, SSO on
-    curl -s -X POST -b "$COOKIES" "$BASE/resource/4" \
-        -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","sso":true,"setHostHeader":"backend.internal","headers":[{"name":"X-Custom-Test","value":"hello-from-pangolin"},{"name":"X-Environment","value":"testing"}],"postAuthPath":"/dashboard"}' >/dev/null
-    echo "    Created: headers.test.dev (setHostHeader=backend.internal, 2 custom headers, postAuthPath=/dashboard)"
-else
-    echo "    Already exists, skipping."
-fi
+RESOURCE4_ID=$(ensure_resource "Headers Test" "headers" '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","sso":true,"setHostHeader":"backend.internal","headers":[{"name":"X-Custom-Test","value":"hello-from-pangolin"},{"name":"X-Environment","value":"testing"}],"postAuthPath":"/dashboard"}' "$DOMAIN_ID" | tail -n1)
+ensure_target "$RESOURCE4_ID" "$SITE1_ID" "172.28.0.20" 80
 
-# --- Resource 5: intelligent DNS routing with health checks ---
 echo "[AP-4] Creating intelligent.test.dev (intelligent routing + health checks)..."
-RESOURCE5_EXISTS=$(curl -s -b "$COOKIES" "$BASE/resource/5" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
-if [ "$RESOURCE5_EXISTS" != "True" ]; then
-    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/resource" \
-        -H "Content-Type: application/json" \
-        -d '{"name":"Intelligent DNS","http":true,"protocol":"tcp","domainId":"test-domain","subdomain":"intelligent"}' >/dev/null
+RESOURCE5_ID=$(ensure_resource "Intelligent DNS" "intelligent" '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","stickySession":true,"sso":false}' "$DOMAIN_ID" | tail -n1)
+ensure_target "$RESOURCE5_ID" "$SITE1_ID" "172.28.0.20" 80 ',"priority":50,"hcEnabled":true,"hcScheme":"http","hcHostname":"172.28.0.20","hcPort":80,"hcPath":"/","hcMethod":"GET","hcInterval":5,"hcUnhealthyInterval":5,"hcTimeout":2'
+ensure_target "$RESOURCE5_ID" "$SITE2_ID" "172.28.0.21" 80 ',"priority":100,"hcEnabled":true,"hcScheme":"http","hcHostname":"172.28.0.21","hcPort":80,"hcPath":"/","hcMethod":"GET","hcInterval":5,"hcUnhealthyInterval":5,"hcTimeout":2'
+api POST "/resource/$RESOURCE5_ID" '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"intelligent","stickySession":true,"sso":false}' >/dev/null
 
-    curl -s -X PUT -b "$COOKIES" "$BASE/resource/5/target" \
-        -H "Content-Type: application/json" \
-        -d '{"siteId":1,"ip":"172.28.0.20","port":80,"method":"http","enabled":true,"priority":50,"hcEnabled":true,"hcScheme":"http","hcHostname":"172.28.0.20","hcPort":80,"hcPath":"/","hcMethod":"GET","hcInterval":5,"hcUnhealthyInterval":5,"hcTimeout":2}' >/dev/null
-
-    curl -s -X PUT -b "$COOKIES" "$BASE/resource/5/target" \
-        -H "Content-Type: application/json" \
-        -d '{"siteId":2,"ip":"172.28.0.21","port":80,"method":"http","enabled":true,"priority":100,"hcEnabled":true,"hcScheme":"http","hcHostname":"172.28.0.21","hcPort":80,"hcPath":"/","hcMethod":"GET","hcInterval":5,"hcUnhealthyInterval":5,"hcTimeout":2}' >/dev/null
-
-    curl -s -X POST -b "$COOKIES" "$BASE/resource/5" \
-        -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"intelligent","stickySession":true,"sso":false}' >/dev/null
-    echo "    Created: intelligent.test.dev (policy=intelligent, health checks enabled, stickySession=true)"
-else
-    echo "    Already exists, ensuring intelligent routing is configured..."
-    curl -s -X POST -b "$COOKIES" "$BASE/resource/5" \
-        -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"intelligent","stickySession":true,"sso":false}' >/dev/null || true
-fi
-
-# --- Resource 6: cross-site sticky DNS affinity (roundrobin + sticky) ---
 echo "[AP-5] Creating stickycross.test.dev (cross-site sticky DNS affinity)..."
-RESOURCE6_EXISTS=$(curl -s -b "$COOKIES" "$BASE/resource/6" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
-if [ "$RESOURCE6_EXISTS" != "True" ]; then
-    curl -s -X PUT -b "$COOKIES" "$BASE/org/test-org/resource" \
-        -H "Content-Type: application/json" \
-        -d '{"name":"Sticky Cross Site","http":true,"protocol":"tcp","domainId":"test-domain","subdomain":"stickycross"}' >/dev/null
-
-    curl -s -X PUT -b "$COOKIES" "$BASE/resource/6/target" \
-        -H "Content-Type: application/json" \
-        -d '{"siteId":1,"ip":"172.28.0.20","port":80,"method":"http","enabled":true,"priority":50}' >/dev/null
-
-    curl -s -X PUT -b "$COOKIES" "$BASE/resource/6/target" \
-        -H "Content-Type: application/json" \
-        -d '{"siteId":2,"ip":"172.28.0.21","port":80,"method":"http","enabled":true,"priority":100}' >/dev/null
-
-    curl -s -X POST -b "$COOKIES" "$BASE/resource/6" \
-        -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","stickySession":true,"sso":false}' >/dev/null
-    echo "    Created: stickycross.test.dev (targets on site 1 + site 2, stickySession=true)"
-else
-    echo "    Already exists, ensuring sticky cross-site routing is configured..."
-    curl -s -X POST -b "$COOKIES" "$BASE/resource/6" \
-        -H "Content-Type: application/json" \
-        -d '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","stickySession":true,"sso":false}' >/dev/null || true
-fi
+RESOURCE6_ID=$(ensure_resource "Sticky Cross Site" "stickycross" '{"dnsAuthorityEnabled":true,"dnsAuthorityTtl":60,"dnsAuthorityRoutingPolicy":"roundrobin","stickySession":true,"sso":false}' "$DOMAIN_ID" | tail -n1)
+ensure_target "$RESOURCE6_ID" "$SITE1_ID" "172.28.0.20" 80 ',"priority":50'
+ensure_target "$RESOURCE6_ID" "$SITE2_ID" "172.28.0.21" 80 ',"priority":100'
 
 echo ""
 echo "Waiting for auth proxy configs to propagate..."
 sleep 5
 
-# Verify DNS Authority
 echo ""
 echo "=== DNS Authority Verification ==="
 echo ""
 
-RESULT_APP=$(dig @localhost -p 5353 app.test.dev A +short 2>/dev/null || echo "FAILED")
-RESULT_APP2=$(dig @localhost -p 5354 app.test.dev A +short 2>/dev/null || echo "FAILED")
-RESULT_WILD=$(dig @localhost -p 5353 random.test.dev A +short 2>/dev/null || echo "FAILED")
-RESULT_MULTI=$(dig @localhost -p 5353 multi.test.dev A +short 2>/dev/null || echo "FAILED")
-RESULT_PATH=$(dig @localhost -p 5353 pathtest.test.dev A +short 2>/dev/null || echo "FAILED")
-RESULT_HDRS=$(dig @localhost -p 5353 headers.test.dev A +short 2>/dev/null || echo "FAILED")
-RESULT_INTEL=$(dig @localhost -p 5353 intelligent.test.dev A +short 2>/dev/null || echo "FAILED")
-RESULT_STICKYCROSS=$(dig @localhost -p 5353 stickycross.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_APP=$(docker compose exec -T test-client dig @172.28.0.10 app.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_APP2=$(docker compose exec -T test-client dig @172.28.0.11 app.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_WILD=$(docker compose exec -T test-client dig @172.28.0.10 random.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_MULTI=$(docker compose exec -T test-client dig @172.28.0.10 multi.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_PATH=$(docker compose exec -T test-client dig @172.28.0.10 pathtest.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_HDRS=$(docker compose exec -T test-client dig @172.28.0.10 headers.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_INTEL=$(docker compose exec -T test-client dig @172.28.0.10 intelligent.test.dev A +short 2>/dev/null || echo "FAILED")
+RESULT_STICKYCROSS=$(docker compose exec -T test-client dig @172.28.0.10 stickycross.test.dev A +short 2>/dev/null || echo "FAILED")
 
 echo "  app.test.dev (Newt 1)      -> ${RESULT_APP:-EMPTY}"
 echo "  app.test.dev (Newt 2)      -> ${RESULT_APP2:-EMPTY}"
@@ -339,15 +360,18 @@ echo "  intelligent.test.dev       -> ${RESULT_INTEL:-EMPTY}"
 echo "  stickycross.test.dev       -> ${RESULT_STICKYCROSS:-EMPTY}"
 echo ""
 
-# ===================================================================
-# Auth Proxy Integration Tests
-# ===================================================================
+if [ "${RUN_BOOTSTRAP_SMOKE_TESTS:-0}" != "1" ]; then
+    echo "Bootstrap complete. Set RUN_BOOTSTRAP_SMOKE_TESTS=1 to run optional Auth Proxy smoke checks."
+    exit 0
+fi
+
+set +e
+
 echo "=== Auth Proxy Integration Tests ==="
 echo ""
 PASS=0
 FAIL=0
 
-# Helper: test and report
 test_result() {
     local label="$1" actual="$2" expected="$3"
     if [ "$actual" = "$expected" ]; then
@@ -359,83 +383,69 @@ test_result() {
     fi
 }
 
-# Test 1: app.test.dev SSO redirect (HTTPS)
-echo "[T1] app.test.dev — SSO redirect on HTTPS"
+echo "[T1] app.test.dev - SSO redirect on HTTPS"
 T1_CODE=$(docker exec test-client curl -sk -o /dev/null -w '%{http_code}' https://app.test.dev --resolve app.test.dev:443:172.28.0.10 2>/dev/null)
 test_result "HTTPS SSO redirect returns 302" "$T1_CODE" "302"
 
-# Test 2: app.test.dev HTTP→HTTPS redirect
-echo "[T2] app.test.dev — HTTP→HTTPS redirect"
+echo "[T2] app.test.dev - HTTP to HTTPS redirect"
 T2_CODE=$(docker exec test-client curl -s -o /dev/null -w '%{http_code}' http://app.test.dev --resolve app.test.dev:80:172.28.0.10 2>/dev/null)
-test_result "HTTP→HTTPS redirect returns 301" "$T2_CODE" "301"
+test_result "HTTP to HTTPS redirect returns 301" "$T2_CODE" "301"
 
-# Test 3: multi.test.dev — no SSO, should proxy directly to backend
-echo "[T3] multi.test.dev — direct proxy (no SSO)"
+echo "[T3] multi.test.dev - direct proxy (no SSO)"
 T3_CODE=$(docker exec test-client curl -sk -o /dev/null -w '%{http_code}' https://multi.test.dev --resolve multi.test.dev:443:172.28.0.10 2>/dev/null)
 test_result "Direct proxy returns 200 (no SSO)" "$T3_CODE" "200"
 
-# Test 4: multi.test.dev — sticky session cookie set
-echo "[T4] multi.test.dev — sticky session cookie"
+echo "[T4] multi.test.dev - sticky session cookie"
 T4_COOKIE=$(docker exec test-client curl -sk -D- https://multi.test.dev --resolve multi.test.dev:443:172.28.0.10 2>/dev/null | grep -i "set-cookie.*p_sticky" || echo "")
 test_result "Sticky session cookie p_sticky present" "$([ -n "$T4_COOKIE" ] && echo yes || echo no)" "yes"
 
-# Test 5: pathtest.test.dev — /api path routes to backend-1
-echo "[T5] pathtest.test.dev — /api path routing"
+echo "[T5] pathtest.test.dev - /api path routing"
 T5_BODY=$(docker exec test-client curl -sk https://pathtest.test.dev/api/ --resolve pathtest.test.dev:443:172.28.0.10 2>/dev/null)
 T5_OK=$(echo "$T5_BODY" | grep -c "Backend\|html" || true)
 test_result "/api path routes to backend" "$([ "$T5_OK" -gt 0 ] && echo yes || echo no)" "yes"
 
-# Test 6: pathtest.test.dev — catch-all routes to backend-2
-echo "[T6] pathtest.test.dev — catch-all path"
+echo "[T6] pathtest.test.dev - catch-all path"
 T6_BODY=$(docker exec test-client curl -sk https://pathtest.test.dev/ --resolve pathtest.test.dev:443:172.28.0.10 2>/dev/null)
 T6_OK=$(echo "$T6_BODY" | grep -c "Backend\|Secondary\|html" || true)
 test_result "Catch-all routes to backend" "$([ "$T6_OK" -gt 0 ] && echo yes || echo no)" "yes"
 
-# Test 7: headers.test.dev — SSO redirect includes postAuthPath
-echo "[T7] headers.test.dev — SSO redirect with postAuthPath"
+echo "[T7] headers.test.dev - SSO redirect with postAuthPath"
 T7_LOC=$(docker exec test-client curl -sk -D- -o /dev/null https://headers.test.dev/some/page --resolve headers.test.dev:443:172.28.0.10 2>/dev/null | grep -i "^location:" || echo "")
 T7_HAS_DASHBOARD=$(echo "$T7_LOC" | grep -c "dashboard" || true)
 test_result "SSO redirect uses postAuthPath=/dashboard" "$([ "$T7_HAS_DASHBOARD" -gt 0 ] && echo yes || echo no)" "yes"
 
-# Test 8: Verify Newt received the expanded config with new fields
-echo "[T8] Newt config — checking for new fields in auth proxy config"
+echo "[T8] Newt config - checking for new fields in auth proxy config"
 T8_TARGETS=$(docker logs test-newt 2>&1 | grep -c "targets:\[" 2>/dev/null || true)
 T8_STICKY=$(docker logs test-newt 2>&1 | grep -c "stickySession:" 2>/dev/null || true)
 test_result "Targets array in config" "$([ "${T8_TARGETS:-0}" -gt 0 ] && echo yes || echo no)" "yes"
 test_result "stickySession field in config" "$([ "${T8_STICKY:-0}" -gt 0 ] && echo yes || echo no)" "yes"
 
-# Test 9: Verify multiple resources received by Newt
 echo "[T9] Newt resource count"
 T9_LAST=$(docker logs test-newt 2>&1 | grep "Replaced resource set" | tail -1)
-T9_COUNT=$(echo "$T9_LAST" | grep -oP '\d+ resources' | grep -oP '\d+' || echo "0")
+T9_COUNT=$(echo "$T9_LAST" | grep -oE '[0-9]+ resources' | grep -oE '[0-9]+' || echo "0")
 test_result "Newt has 6 resources loaded" "$([ "$T9_COUNT" -ge 6 ] && echo yes || echo no)" "yes"
 
-# Test 10: intelligent.test.dev returns one valid DNS A answer
-echo "[T10] intelligent.test.dev — intelligent routing returns one healthy IP"
+echo "[T10] intelligent.test.dev - intelligent routing returns one healthy IP"
 T10_LINES=$(echo "$RESULT_INTEL" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | wc -l | tr -d ' ')
 T10_VALID=$(echo "$RESULT_INTEL" | grep -E '^(172\.28\.0\.10|172\.28\.0\.11)$' >/dev/null && echo yes || echo no)
 test_result "Intelligent routing returns a single A record" "$([ "$T10_LINES" -eq 1 ] && echo yes || echo no)" "yes"
 test_result "Intelligent routing answer is a known healthy site IP" "$T10_VALID" "yes"
 
-# Test 11: sticky DNS affinity for roundrobin policy (stickycross.test.dev)
-echo "[T11] stickycross.test.dev — sticky DNS affinity follows last established session"
-# Establish session through Newt 1, then query Newt 1 DNS from same client
+echo "[T11] stickycross.test.dev - sticky DNS affinity follows last established session"
 docker exec test-client curl -sk -o /dev/null https://stickycross.test.dev --resolve stickycross.test.dev:443:172.28.0.10 2>/dev/null || true
 sleep 1
-T11_DNS_N1=$(docker exec test-client sh -lc "dig @172.28.0.10 stickycross.test.dev A +short | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' | head -n1" 2>/dev/null | tr -d '\r')
+T11_DNS_N1=$(docker exec test-client sh -lc "dig @172.28.0.10 stickycross.test.dev A +short | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1" 2>/dev/null | tr -d '\r')
 test_result "After session on Newt 1, DNS via Newt 1 returns site 1 IP" "$T11_DNS_N1" "172.28.0.10"
 
-# Establish session through Newt 2, then query Newt 2 DNS from same client
 docker exec test-client curl -sk -o /dev/null https://stickycross.test.dev --resolve stickycross.test.dev:443:172.28.0.11 2>/dev/null || true
 sleep 1
-T11_DNS_N2=$(docker exec test-client sh -lc "dig @172.28.0.11 stickycross.test.dev A +short | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' | head -n1" 2>/dev/null | tr -d '\r')
+T11_DNS_N2=$(docker exec test-client sh -lc "dig @172.28.0.11 stickycross.test.dev A +short | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1" 2>/dev/null | tr -d '\r')
 test_result "After session on Newt 2, DNS via Newt 2 returns site 2 IP" "$T11_DNS_N2" "172.28.0.11"
 
-# Test 12: sticky DNS affinity also applies to intelligent policy
-echo "[T12] intelligent.test.dev — sticky affinity overrides intelligent selection"
+echo "[T12] intelligent.test.dev - sticky affinity overrides intelligent selection"
 docker exec test-client curl -sk -o /dev/null https://intelligent.test.dev --resolve intelligent.test.dev:443:172.28.0.11 2>/dev/null || true
 sleep 1
-T12_DNS=$(docker exec test-client sh -lc "dig @172.28.0.11 intelligent.test.dev A +short | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' | head -n1" 2>/dev/null | tr -d '\r')
+T12_DNS=$(docker exec test-client sh -lc "dig @172.28.0.11 intelligent.test.dev A +short | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1" 2>/dev/null | tr -d '\r')
 test_result "After session on Newt 2, intelligent policy via Newt 2 returns site 2 IP" "$T12_DNS" "172.28.0.11"
 
 echo ""
@@ -443,7 +453,7 @@ echo "=== Results: $PASS passed, $FAIL failed ==="
 echo ""
 
 if [ "$FAIL" -gt 0 ]; then
-    echo "Some tests failed. Debug with:"
+    echo "Some bootstrap integration checks failed. Debug with:"
     echo "  docker logs test-newt 2>&1 | grep -i 'auth proxy'"
     echo "  docker logs test-pangolin 2>&1 | grep -i 'auth proxy'"
 fi
